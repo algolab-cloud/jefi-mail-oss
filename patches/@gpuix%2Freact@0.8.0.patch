@@ -1,0 +1,212 @@
+diff --git a/dist/reconciler/batch-renderer.js b/dist/reconciler/batch-renderer.js
+index 014a00c89065cfc7666cc96fa8023c999420467d..668294c8ec62d872c726257d229ab85ca0466bf3 100644
+--- a/dist/reconciler/batch-renderer.js
++++ b/dist/reconciler/batch-renderer.js
+@@ -29,11 +29,18 @@ import { containerForRenderer, unregisterEventHandlers } from "./event-registry.
+  */
+ export function wrapWithBatching(inner) {
+     let queue = [];
++    // What the last batch destroyed. Removing a child frees its whole subtree in
++    // Rust; React then detaches each host element in it one by one, after the
++    // commit. Those ids are already gone, so they needn't cross again (a
++    // deleted week of calendar events was ~300 no-op destroys).
++    let destroyed = new Set();
+     return {
+         createElement(id, elementType) {
+             queue.push(["createElement", id, elementType]);
+         },
+         destroyElement(id) {
++            if (destroyed.has(id))
++                return [];
+             queue.push(["destroyElement", id]);
+             return [];
+         },
+@@ -62,7 +69,15 @@ export function wrapWithBatching(inner) {
+             if (queue.length === 0)
+                 return;
+             // Preserve the queue on failure so JS and Rust cannot desync.
+-            const destroyedIds = inner.applyBatch(JSON.stringify(queue));
++            // Half an emoji (a lone UTF-16 surrogate, e.g. from text cut mid-character) is valid in JS but
++            // rejected by the native JSON parser, which would crash the app: send U+FFFD instead.
++            // JSON.stringify writes a lone surrogate as a \udXXX escape, so only a batch with one pays
++            // for the replacer (it runs for every value, and a batch holds thousands).
++            let json = JSON.stringify(queue);
++            if (/\\ud[89a-f]/i.test(json))
++                json = JSON.stringify(queue, (_key, value) => (typeof value === "string" ? value.toWellFormed() : value));
++            const destroyedIds = inner.applyBatch(json);
++            destroyed = new Set(destroyedIds);
+             const container = containerForRenderer(inner);
+             if (container) {
+                 for (const id of destroyedIds) {
+diff --git a/dist/reconciler/host-config.js b/dist/reconciler/host-config.js
+index cc9d0c000e6f77a4d57b2d4a23e0c7ce9acff8ee..a6b16a12f3d6f0084f87b36fdb306dd49f8114cc 100644
+--- a/dist/reconciler/host-config.js
++++ b/dist/reconciler/host-config.js
+@@ -32,6 +32,9 @@ const EVENT_PROPS = [
+     ["onShowMore", "showMore"],
+     ["onLineClick", "lineClick"],
+     ["onLinkClick", "linkClick"],
++    ["onLinkHover", "linkHover"],
++    ["onLinkFocus", "linkFocus"],
++    ["onLinkBlur", "linkBlur"],
+     ["onVisibleRange", "visibleRange"],
+     ["onHighlight", "highlight"],
+     ["onChange", "change"],
+@@ -83,12 +86,84 @@ function diffEventListeners(container, id, oldProps, newProps) {
+     }
+ }
+ // ── Style helper ─────────────────────────────────────────────────────
++/** Deep equality for style values (plain objects, arrays and primitives). */
++function sameStyleValue(a, b) {
++    if (a === b)
++        return true;
++    if (typeof a !== "object" || typeof b !== "object" || a === null || b === null)
++        return false;
++    if (Array.isArray(a) !== Array.isArray(b))
++        return false;
++    let count = 0;
++    for (const key in a) {
++        if (a[key] === undefined)
++            continue;
++        count++;
++        if (!sameStyleValue(a[key], b[key]))
++            return false;
++    }
++    for (const key in b) {
++        if (b[key] !== undefined)
++            count--;
++    }
++    return count === 0;
++}
+ function sendStyle(renderer, id, props) {
+     const style = props.style;
+     if (style == null || Object.keys(style).length === 0)
+         return;
+     renderer.setStyle(id, style);
+ }
++// ── Bidirectional text ───────────────────────────────────────────────
++// Rust truncates a line in logical order and appends the ellipsis, then the
++// line is laid out by the Unicode bidi algorithm. When the cut falls inside a
++// run against the paragraph's direction ("Re: <Arabic>", or an English phrase
++// in an Arabic subject), the ellipsis resolves to the paragraph's direction and
++// lands beside the run's beginning, so the text looks cut on the wrong side.
++// Each such run is sent as an isolate (RLI or LRI ... PDI): a cut drops the
++// PDI, the ellipsis stays inside the run and sits at its logical end. Text
++// with a single direction (every LTR string, a pure Arabic one) is unchanged.
++const RTL_CHAR = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFC\u{10800}-\u{10FFF}\u{1E800}-\u{1EFFF}]/u;
++const LETTER = /\p{L}/u;
++const MARK_OR_DIGIT = /[\p{M}\p{Nd}]/u;
++const BIDI_CONTROL = /[\u202A-\u202E\u2066-\u2069]/;
++function bidiClass(ch) {
++    // Explicit marks count as strong, as they do for the paragraph's direction.
++    if (ch === "\u200E")
++        return "L";
++    if (ch === "\u200F" || ch === "\u061C")
++        return "R";
++    if (MARK_OR_DIGIT.test(ch))
++        return "N";
++    if (RTL_CHAR.test(ch))
++        return "R";
++    return LETTER.test(ch) ? "L" : "N";
++}
++export function isolateBidiRuns(text) {
++    if (!RTL_CHAR.test(text) || BIDI_CONTROL.test(text))
++        return text;
++    const chars = Array.from(text);
++    const classes = chars.map(bidiClass);
++    const base = classes.find((c) => c !== "N");
++    const other = base === "L" ? "R" : "L";
++    if (!base || !classes.includes(other))
++        return text;
++    let out = "";
++    for (let i = 0; i < chars.length;) {
++        if (classes[i] !== other) {
++            out += chars[i++];
++            continue;
++        }
++        // The run: up to its last strong character before the paragraph's direction resumes.
++        let last = i;
++        for (let k = i; k < chars.length && classes[k] !== base; k++)
++            if (classes[k] === other)
++                last = k;
++        out += (other === "R" ? "\u2067" : "\u2066") + chars.slice(i, last + 1).join("") + "\u2069";
++        i = last + 1;
++    }
++    return out;
++}
+ // ── Custom prop forwarding ───────────────────────────────────────────
+ // Props that are handled by the reconciler directly (not forwarded as custom props).
+ const RESERVED_PROPS = new Set(["style", "className", "children", "key", "ref"]);
+@@ -178,7 +253,7 @@ function materialize(node) {
+     }
+     else {
+         renderer.createElement(node.id, "text");
+-        renderer.setText(node.id, node.text);
++        renderer.setText(node.id, isolateBidiRuns(node.text));
+     }
+     state.mounted = true;
+     for (const child of state.initialChildren) {
+@@ -277,16 +352,23 @@ export const hostConfig = {
+     commitMount(_instance, _type, _props, _internalInstanceHandle) { },
+     commitUpdate(instance, _type, oldProps, newProps, _internalInstanceHandle) {
+         const container = containerFor(instance);
+-        // Always resend style — per-element JSON is small, and this avoids
+-        // bugs from same-reference mutations or style removal.
+-        container.renderer.setStyle(instance.id, newProps.style ?? {});
++        // React calls this for every re-rendered element (new props object), and
++        // an inline style is a new object with the same values nearly every time.
++        // Resend it only when a value changed: each setStyle crosses to Rust and
++        // restyles the element. The same object is still resent, in case it was
++        // mutated in place.
++        const oldStyle = oldProps.style ?? {};
++        const newStyle = newProps.style ?? {};
++        if (oldStyle === newStyle || !sameStyleValue(oldStyle, newStyle)) {
++            container.renderer.setStyle(instance.id, newStyle);
++        }
+         diffEventListeners(container, instance.id, oldProps, newProps);
+         // Custom prop diff (for non-div/text elements)
+         diffCustomProps(container.renderer, instance.id, instance.type, oldProps, newProps);
+         instance.props = newProps;
+     },
+     commitTextUpdate(textInstance, _oldText, newText) {
+-        rendererFor(textInstance).setText(textInstance.id, newText);
++        rendererFor(textInstance).setText(textInstance.id, isolateBidiRuns(newText));
+         textInstance.text = newText;
+     },
+     appendChildToContainer(container, child) {
+diff --git a/dist/types/host.d.ts b/dist/types/host.d.ts
+index 8183fbaa3f2f9127297d6d36553315d173bf9798..60e6062a491cf1eed9972a445c73a5ad515fbd77 100644
+--- a/dist/types/host.d.ts
++++ b/dist/types/host.d.ts
+@@ -315,6 +315,9 @@ export interface Props {
+     onShowMore?: (event: EventPayload) => void;
+     onLineClick?: (event: EventPayload) => void;
+     onLinkClick?: (event: EventPayload) => void;
++    onLinkHover?: (event: EventPayload) => void;
++    onLinkFocus?: (event: EventPayload) => void;
++    onLinkBlur?: (event: EventPayload) => void;
+     onVisibleRange?: (event: EventPayload) => void;
+     /** Match count changed for this element's `highlight`. See `matchCount`. */
+     onHighlight?: (event: EventPayload) => void;
+@@ -459,6 +462,12 @@ export interface MarkdownProps extends Props {
+     theme?: GpuixTheme;
+     /** Fires when a block containing links is clicked. `event.value` is the URL. */
+     onLinkClick?: (event: EventPayload) => void;
++    /** Fires as the pointer enters, moves within, or leaves an inline link range. */
++    onLinkHover?: (event: EventPayload) => void;
++    /** Fires when an inline link receives keyboard focus. */
++    onLinkFocus?: (event: EventPayload) => void;
++    /** Fires when an inline link loses keyboard focus. */
++    onLinkBlur?: (event: EventPayload) => void;
+ }
+ export interface AnchoredProps extends Props {
+     position?: {
+@@ -488,6 +497,8 @@ export interface ElementBounds {
+ export interface NativeRenderer {
+     /** Apply one React commit. Returns every element id destroyed by the batch. */
+     applyBatch(json: string): Array<number>;
++    /** Release a data-URL image after every matching `<img>` has unmounted. */
++    releaseImageDataUrl?(src: string): boolean;
+     focusElement?(elementId: number): void;
+     focusNext?(): void;
+     focusPrevious?(): void;

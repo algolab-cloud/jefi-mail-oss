@@ -1,0 +1,6 @@
+# Blacksmith's runners aren't GitHub-hosted, so actionlint has to be told they exist.
+self-hosted-runner:
+  labels:
+    - blacksmith-2vcpu-ubuntu-2404
+    - blacksmith-4vcpu-ubuntu-2404
+    - blacksmith-6vcpu-macos-15

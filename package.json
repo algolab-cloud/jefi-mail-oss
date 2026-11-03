@@ -1,0 +1,53 @@
+{
+  "name": "jefi",
+  "version": "0.8.15",
+  "private": true,
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run native:links && bun scripts/dev.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test ./src ./scripts",
+    "build": "bun build --compile --define process.env.NODE_ENV=\"production\" src/mail.tsx src/engine/worker.ts src/phishing-worker.ts --outfile dist/jefi",
+    "screenshot": "bun scripts/shot.ts tmp/jefi",
+    "brand": "bun scripts/brand.ts",
+    "og": "bun scripts/og-image.ts",
+    "domains": "bun scripts/disposable-domains.ts",
+    "smoke:web-risk": "bun scripts/testing/web-risk-smoke.ts",
+    "native:links": "bun scripts/native/build-gpuix-link-events.ts",
+    "native:image-eviction-smoke": "NAPI_RS_NATIVE_LIBRARY_PATH=\"$PWD/build/native/gpuix-native.darwin-arm64.node\" bun scripts/testing/image-data-url-eviction.tsx",
+    "bundle": "bun scripts/bundle.ts",
+    "sign": "bun scripts/release/sign.ts",
+    "release": "bun scripts/release/release.ts",
+    "demo": "bun scripts/demo.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.127.0",
+    "@gpuix/react": "latest",
+    "chrono-node": "2.10.1",
+    "domhandler": "5.0.3",
+    "htmlparser2": "10.1.0",
+    "imapflow": "^2.0.5",
+    "mailparser": "^3.9.28",
+    "nodemailer": "^10.0.10",
+    "openai": "^7.19.0",
+    "react": "^19.2.4",
+    "tldts": "^7.4.13"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "@types/bun": "1.3.11",
+    "@types/mailparser": "^3.4.6",
+    "@types/nodemailer": "^8.0.2",
+    "@types/react": "^19.2.14",
+    "@types/smtp-server": "^3.5.13",
+    "hoodiecrow-imap": "^2.1.0",
+    "smtp-server": "^3.19.13",
+    "typescript": "~5.9.3"
+  },
+  "patchedDependencies": {
+    "@gpuix/native@0.8.0": "patches/@gpuix%2Fnative@0.8.0.patch",
+    "@gpuix/react@0.8.0": "patches/@gpuix%2Freact@0.8.0.patch",
+    "libqp@2.1.1": "patches/libqp@2.1.1.patch"
+  }
+}

@@ -1,0 +1,59 @@
+name: Native smoke
+
+# Drives the real app on a Mac: GPUIX links and the Full HTML WKWebView hiding under overlays.
+# Also run by the release (blocking); here a runner quirk or native change shows up before a tag.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - src/native/**
+      - src/html-view.tsx
+      - src/overlays.ts
+      - src/whats-new-sheet.tsx
+      - scripts/testing/overlay-webview.tsx
+      - scripts/native/**
+      - scripts/bundle.ts
+      - .github/workflows/native-smoke.yml
+  push:
+    branches: [main]
+    paths:
+      - src/native/**
+      - src/html-view.tsx
+      - src/overlays.ts
+      - src/whats-new-sheet.tsx
+      - scripts/testing/overlay-webview.tsx
+      - scripts/native/**
+      - scripts/bundle.ts
+      - .github/workflows/native-smoke.yml
+
+concurrency:
+  group: native-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: Native smoke (macOS)
+    runs-on: macos-15 # GitHub-hosted, so pull requests from forks run too
+    timeout-minutes: 45
+    env:
+      NAPI_RS_NATIVE_LIBRARY_PATH: ${{ github.workspace }}/build/native/gpuix-native.darwin-arm64.node
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.97.1
+      - run: bun install --frozen-lockfile
+      # The patched renderer the release ships; bundle builds the same thing first.
+      - run: bun run native:links
+      - name: Overlays hide the Full HTML web view
+        run: bun scripts/testing/overlay-webview.tsx
+      - name: Native link interactions
+        run: |
+          bun scripts/testing/markdown-link-events.tsx
+          bun scripts/testing/link-popover-compact.tsx

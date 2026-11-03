@@ -1,0 +1,133 @@
+name: Release app
+
+# Push a tag like v0.2.0 to build, sign, notarize and publish Jefi.dmg.
+# Artifacts land in the R2 bucket served at https://downloads.jefi.app:
+#   /releases/<version>/Jefi-<version>.dmg   immutable, one per release
+#   /Jefi.dmg                                always the latest (what the website links to)
+#   /latest.json                             version + URL + sha256, for in-app update checks
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (without the v), e.g. 0.2.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: blacksmith-6vcpu-macos-15 # Apple silicon (M4): signing and notarization need a Mac
+    environment: release
+    env:
+      R2_BUCKET: jefi-downloads
+      DOWNLOAD_BASE: https://downloads.jefi.app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Match the compiler used to validate Jefi's patched native renderer locally.
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.97.1
+
+      - name: Resolve version
+        id: v
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          [ -z "$VERSION" ] && VERSION="${GITHUB_REF_NAME#v}"
+          PKG=$(jq -r .version package.json)
+          if [ "$VERSION" != "$PKG" ]; then
+            echo "::error::Tag v$VERSION does not match package.json version $PKG"; exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run test
+      - run: bun run bundle
+      - name: Verify transient image cleanup
+        run: bun run native:image-eviction-smoke
+      - name: Verify native link interactions
+        run: |
+          NAPI_RS_NATIVE_LIBRARY_PATH="$PWD/build/native/gpuix-native.darwin-arm64.node" bun scripts/testing/markdown-link-events.tsx
+          NAPI_RS_NATIVE_LIBRARY_PATH="$PWD/build/native/gpuix-native.darwin-arm64.node" bun scripts/testing/link-popover-compact.tsx
+      # Blocking like the steps above: a failure here stops the release.
+      - name: Verify overlays hide the Full HTML web view
+        run: NAPI_RS_NATIVE_LIBRARY_PATH="$PWD/build/native/gpuix-native.darwin-arm64.node" bun scripts/testing/overlay-webview.tsx
+
+      - name: Import Developer ID certificate
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+
+      - name: Sign and package
+        env:
+          JEFI_SIGN_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }} # "Developer ID Application: Name (TEAMID)"
+          # The Developer ID profile granting Communication Notifications (sender pictures in place
+          # of the app icon on banners). Optional: without it the app is signed as before.
+          PROFILE_BASE64: ${{ secrets.MACOS_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          if [ -n "$PROFILE_BASE64" ]; then
+            echo "$PROFILE_BASE64" | base64 --decode > "$RUNNER_TEMP/Jefi.provisionprofile"
+            export JEFI_PROVISIONING_PROFILE="$RUNNER_TEMP/Jefi.provisionprofile"
+          fi
+          bun scripts/release/sign.ts
+
+      # The signed, hardened-runtime app must start headless and load every Frameworks helper under
+      # its signature before anything goes to Apple or users.
+      - name: Smoke-test the signed app (headless version and native helper selftest)
+        run: bun scripts/release/signed-smoke.ts dist/Jefi.app
+
+      - name: Notarize
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          bun scripts/release/sign.ts --notarize-only
+          echo "DMG=dist/Jefi-${{ steps.v.outputs.version }}.dmg" >> "$GITHUB_ENV"
+
+      - name: Write latest.json
+        run: |
+          VERSION="${{ steps.v.outputs.version }}"
+          SHA=$(shasum -a 256 "$DMG" | cut -d' ' -f1)
+          jq -n --arg v "$VERSION" --arg url "$DOWNLOAD_BASE/releases/$VERSION/Jefi-$VERSION.dmg" \
+                --arg sha "$SHA" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                '{version:$v, url:$url, sha256:$sha, published:$date, minimumSystemVersion:"13.0"}' > dist/latest.json
+          cat dist/latest.json
+
+      - name: Upload to R2
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          VERSION="${{ steps.v.outputs.version }}"
+          put() { bunx wrangler@4 r2 object put "$R2_BUCKET/$1" --file "$2" --content-type "$3" --cache-control "$4" --remote; }
+          put "releases/$VERSION/Jefi-$VERSION.dmg" "$DMG" application/x-apple-diskimage "public, max-age=31536000, immutable"
+          put "Jefi.dmg"    "$DMG"             application/x-apple-diskimage "public, max-age=300"
+          put "latest.json" dist/latest.json   application/json             "public, max-age=60"
+
+      - name: GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.v.outputs.version }}
+          generate_release_notes: true
+          body: "Download: ${{ env.DOWNLOAD_BASE }}/releases/${{ steps.v.outputs.version }}/Jefi-${{ steps.v.outputs.version }}.dmg"

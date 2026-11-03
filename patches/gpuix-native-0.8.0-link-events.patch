@@ -1,0 +1,830 @@
+diff --git a/packages/native/Cargo.toml b/packages/native/Cargo.toml
+index 6c6f29b..cf74a4c 100644
+--- a/packages/native/Cargo.toml
++++ b/packages/native/Cargo.toml
+@@ -83,7 +83,7 @@ core-graphics = "=0.24.0"
+ tar = "0.4"
+ flate2 = "1"
+ # Production uses the embedded AppKit loop; tests use the native Metal renderer.
+-gpui_macos = { path = "../../zed/crates/gpui_macos", default-features = false, features = ["font-kit"] }
++gpui_macos = { path = "../../zed/crates/gpui_macos", default-features = false, features = ["font-kit", "runtime_shaders"] }
+ 
+ # Same crate GPUI uses. A .node cannot ship an exe manifest, so Windows DPI
+ # awareness is set at runtime in renderer.rs instead of via windows-manifest.
+diff --git a/packages/native/src/custom_elements/img.rs b/packages/native/src/custom_elements/img.rs
+index d58d72d..c7615ba 100644
+--- a/packages/native/src/custom_elements/img.rs
++++ b/packages/native/src/custom_elements/img.rs
+@@ -8,6 +8,13 @@
+ /// definite `width` and `height` keep the layout box stable during that load.
+ use super::{CustomElement, CustomElementFactory, CustomRenderContext};
+ use base64::Engine as _;
++#[cfg(any(test, feature = "test-support"))]
++use std::cell::RefCell;
++
++#[cfg(any(test, feature = "test-support"))]
++thread_local! {
++    static PENDING_RELEASE_TEST_RESULT: RefCell<Option<(bool, bool)>> = const { RefCell::new(None) };
++}
+ 
+ pub struct ImgFactory;
+ 
+@@ -85,6 +92,8 @@ pub struct ImgElement {
+     source: ImgSource,
+     object_fit: ImgObjectFit,
+     alt: String,
++    #[cfg(any(test, feature = "test-support"))]
++    release_pending_decode_for_test: bool,
+ }
+ 
+ impl ImgElement {
+@@ -179,11 +188,31 @@ impl CustomElement for ImgElement {
+     fn render(
+         &mut self,
+         ctx: CustomRenderContext,
+-        _window: &mut gpui::Window,
+-        _cx: &mut gpui::Context<crate::renderer::GpuixView>,
++        window: &mut gpui::Window,
++        cx: &mut gpui::Context<crate::renderer::GpuixView>,
+     ) -> gpui::AnyElement {
+         use gpui::prelude::*;
+ 
++        #[cfg(any(test, feature = "test-support"))]
++        if self.release_pending_decode_for_test {
++            let result = match &self.source {
++                ImgSource::Data(image) => {
++                    let pending = image.clone().use_render_image(window, cx).is_none()
++                        && image.is_asset_cached(cx);
++                    let removed = match ctx.props.get("src").and_then(serde_json::Value::as_str) {
++                        Some(src) => release_data_url_image(src, window, cx).unwrap_or(false),
++                        None => false,
++                    };
++                    (pending, removed)
++                }
++                _ => (false, false),
++            };
++            PENDING_RELEASE_TEST_RESULT.with(|stored| *stored.borrow_mut() = Some(result));
++            // Do not return `gpui::img`: a subsequent paint request would start
++            // the decoder again and invalidate the early-dismiss simulation.
++            return gpui::div().into_any_element();
++        }
++
+         let el = match &self.source {
+             ImgSource::Path(path) => gpui::img(path.clone()),
+             ImgSource::Uri(uri) => gpui::img(uri.clone()),
+@@ -244,11 +273,19 @@ impl CustomElement for ImgElement {
+                     .unwrap_or_default()
+             }
+             "alt" => self.alt = value.as_str().unwrap_or_default().to_string(),
++            #[cfg(any(test, feature = "test-support"))]
++            "testReleasePendingDecode" => {
++                self.release_pending_decode_for_test = value.as_bool().unwrap_or(false)
++            }
+             _ => {}
+         }
+     }
+ 
+     fn supported_props(&self) -> &'static [&'static str] {
++        #[cfg(any(test, feature = "test-support"))]
++        return &["src", "objectFit", "alt", "testReleasePendingDecode"];
++
++        #[cfg(not(any(test, feature = "test-support")))]
+         &["src", "objectFit", "alt"]
+     }
+ 
+@@ -284,7 +321,7 @@ fn svg_bytes(src: &str) -> Option<Vec<u8>> {
+     std::fs::read(src).ok()
+ }
+ 
+-fn decode_image_data_url(src: &str) -> Option<(gpui::ImageFormat, Vec<u8>)> {
++pub(crate) fn decode_image_data_url(src: &str) -> Option<(gpui::ImageFormat, Vec<u8>)> {
+     let (metadata, data) = src.strip_prefix("data:")?.split_once(',')?;
+     let mut parts = metadata.split(';');
+     let mime_type = parts.next()?.to_ascii_lowercase();
+@@ -300,6 +337,63 @@ fn decode_image_data_url(src: &str) -> Option<(gpui::ImageFormat, Vec<u8>)> {
+     Some((format, bytes))
+ }
+ 
++/// Remove a decoded data URL from GPUI's process asset cache and this window's
++/// sprite atlas. Callers must first prove that no retained `<img>` still uses
++/// the source; evicting a live image would make its next paint decode it again.
++pub(crate) fn release_data_url_image(
++    src: &str,
++    window: &mut gpui::Window,
++    cx: &mut gpui::App,
++) -> Option<bool> {
++    let (format, bytes) = decode_image_data_url(src)?;
++    let image = std::sync::Arc::new(gpui::Image::from_bytes(format, bytes));
++    #[cfg(any(test, feature = "test-support"))]
++    let cached = image.is_asset_cached(cx);
++    let render_image = image.clone().get_render_image(window, cx);
++    #[cfg(not(any(test, feature = "test-support")))]
++    let cached = render_image.is_some();
++    // This also removes an in-flight shared decoder task. The detached future
++    // may finish, but nothing can insert its result back into App.loading_assets.
++    image.remove_asset(cx);
++    if let Some(render_image) = render_image {
++        #[cfg(any(test, feature = "test-support"))]
++        let released_image = render_image.clone();
++        cx.drop_image(render_image, Some(window));
++        #[cfg(any(test, feature = "test-support"))]
++        assert!(
++            !window.has_image_atlas_entry(&released_image),
++            "released data-URL image remained in the current window atlas"
++        );
++    }
++    Some(cached)
++}
++
++/// Test-only visibility into both cache layers. This deliberately reconstructs
++/// the same content-addressed `Image` that `<img src="data:…">` creates, so it
++/// observes the production keys without retaining another cache entry.
++#[cfg(any(test, feature = "test-support"))]
++pub(crate) fn data_url_image_cache_state(
++    src: &str,
++    window: &mut gpui::Window,
++    cx: &mut gpui::App,
++) -> Option<(bool, bool)> {
++    let (format, bytes) = decode_image_data_url(src)?;
++    let image = std::sync::Arc::new(gpui::Image::from_bytes(format, bytes));
++    let asset_cached = image.is_asset_cached(cx);
++    // `get_render_image` delegates to `Window::get_asset`, which starts a load
++    // on a miss. Probe it only after the non-mutating cache check succeeds.
++    let atlas_cached = asset_cached
++        && image
++            .get_render_image(window, cx)
++            .is_some_and(|render_image| window.has_image_atlas_entry(&render_image));
++    Some((asset_cached, atlas_cached))
++}
++
++#[cfg(any(test, feature = "test-support"))]
++pub(crate) fn take_pending_release_test_result() -> Option<(bool, bool)> {
++    PENDING_RELEASE_TEST_RESULT.with(|stored| stored.borrow_mut().take())
++}
++
+ fn percent_decode(input: &str) -> Vec<u8> {
+     let bytes = input.as_bytes();
+     let mut out = Vec::with_capacity(bytes.len());
+diff --git a/packages/native/src/custom_elements/markdown.rs b/packages/native/src/custom_elements/markdown.rs
+index 1dad3ef..b8363a8 100644
+--- a/packages/native/src/custom_elements/markdown.rs
++++ b/packages/native/src/custom_elements/markdown.rs
+@@ -15,7 +15,7 @@ use gpui::SharedString;
+ 
+ use super::{CustomElement, CustomElementFactory, CustomRenderContext};
+ use crate::markdown::parser::{parse, BlockTree};
+-use crate::markdown::render::{render_tree, MdContext};
++use crate::markdown::render::{link_urls, render_tree, MdContext};
+ use crate::renderer::emit_event_full;
+ use crate::theme::Theme;
+ 
+@@ -40,6 +40,9 @@ pub struct MarkdownElement {
+     tree: Option<Rc<BlockTree>>,
+     parsed_len: Option<usize>,
+     parsed_hash: Option<u64>,
++    link_urls: Vec<String>,
++    link_focuses: Vec<crate::text::LinkFocus>,
++    link_focus_enabled: bool,
+ }
+ 
+ impl MarkdownElement {
+@@ -67,13 +70,58 @@ impl CustomElement for MarkdownElement {
+         &mut self,
+         ctx: CustomRenderContext,
+         window: &mut gpui::Window,
+-        _cx: &mut gpui::Context<crate::renderer::GpuixView>,
++        cx: &mut gpui::Context<crate::renderer::GpuixView>,
+     ) -> gpui::AnyElement {
+         use gpui::prelude::*;
+ 
+         let theme = self.theme.clone();
+         let tree = self.tree();
+ 
++        let urls = link_urls(&tree, &theme);
++        let link_focus_enabled = ctx.events.contains("linkFocus");
++        if urls != self.link_urls || link_focus_enabled != self.link_focus_enabled {
++            self.link_urls = urls.clone();
++            self.link_focus_enabled = link_focus_enabled;
++            self.link_focuses.clear();
++            if link_focus_enabled {
++                for (link_index, url) in urls.into_iter().enumerate() {
++                    let handle = cx.focus_handle().tab_index(0).tab_stop(true);
++                    let position = Arc::new(parking_lot::Mutex::new(None::<(f32, f32)>));
++                    let callback = ctx.event_callback.clone();
++                    let element_id = ctx.id;
++                    let focus_url = url.clone();
++                    let on_focus_change = Arc::new(move |focused: bool, point: Option<(f32, f32)>| {
++                        if focused {
++                            emit_event_full(&callback, element_id, "linkFocus", |p| {
++                                p.value = Some(focus_url.clone());
++                                p.start_index = Some(link_index as f64);
++                                if let Some((x, y)) = point {
++                                    p.x = Some(x.into());
++                                    p.y = Some(y.into());
++                                }
++                            });
++                        } else {
++                            emit_event_full(&callback, element_id, "linkBlur", |p| {
++                                p.value = Some(focus_url.clone());
++                                p.start_index = Some(link_index as f64);
++                            });
++                        }
++                    });
++                    let mut focus_color = theme.accent;
++                    focus_color.a = 0.14;
++                    self.link_focuses.push(crate::text::LinkFocus {
++                        handle,
++                        url,
++                        position,
++                        focused: Arc::new(parking_lot::Mutex::new(false)),
++                        on_focus_change,
++                        focus_color,
++                        focus_border: theme.accent,
++                    });
++                }
++            }
++        }
++
+         // Link clicks are hit-tested per byte range inside the painted text, so
+         // clicking prose emits nothing and clicking the second link emits the
+         // second URL.
+@@ -90,6 +138,21 @@ impl CustomElement for MarkdownElement {
+             None
+         };
+ 
++        let on_link_hover: Option<Arc<dyn Fn(Option<&str>, f32, f32)>> =
++            if ctx.events.contains("linkHover") {
++                let callback = ctx.event_callback.clone();
++                let element_id = ctx.id;
++                Some(Arc::new(move |url: Option<&str>, x: f32, y: f32| {
++                    emit_event_full(&callback, element_id, "linkHover", |p| {
++                        p.value = url.map(str::to_string);
++                        p.x = Some(x.into());
++                        p.y = Some(y.into());
++                    });
++                }))
++            } else {
++                None
++            };
++
+         let mut md = MdContext::new(
+             ctx.id,
+             ctx.selection.clone(),
+@@ -97,6 +160,8 @@ impl CustomElement for MarkdownElement {
+             ctx.selection_wash,
+             theme.clone(),
+             on_link,
++            on_link_hover,
++            self.link_focuses.clone(),
+             ctx.highlight_set.clone(),
+         );
+         let body = render_tree(&tree, &mut md, window);
+@@ -130,7 +195,7 @@ impl CustomElement for MarkdownElement {
+     }
+ 
+     fn supported_events(&self) -> &'static [&'static str] {
+-        &["linkClick", "click", "mouseEnter", "mouseLeave", "fileDrop"]
++        &["linkClick", "linkHover", "linkFocus", "linkBlur", "click", "mouseEnter", "mouseLeave", "fileDrop"]
+     }
+ 
+     fn destroy(&mut self) {
+diff --git a/packages/native/src/lib.rs b/packages/native/src/lib.rs
+index d000cd1..cb32400 100644
+--- a/packages/native/src/lib.rs
++++ b/packages/native/src/lib.rs
+@@ -66,6 +66,20 @@ pub fn has_test_gpuix_renderer() -> bool {
+     ))
+ }
+ 
++/// Feature level for per-range Markdown link hover and keyboard focus events.
++#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++#[napi]
++pub fn markdown_link_events_version() -> u32 {
++    1
++}
++
++/// Feature level for explicit transient data-URL image cache release.
++#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++#[napi]
++pub fn image_data_url_release_version() -> u32 {
++    1
++}
++
+ #[cfg(all(
+     not(all(target_arch = "wasm32", target_os = "unknown")),
+     not(all(
+diff --git a/packages/native/src/markdown/render.rs b/packages/native/src/markdown/render.rs
+index 456e6b2..75dbb7e 100644
+--- a/packages/native/src/markdown/render.rs
++++ b/packages/native/src/markdown/render.rs
+@@ -9,6 +9,7 @@
+ //! `TextRun`s on the identical font, so layout never changes.
+ 
+ use std::ops::Range;
++use std::collections::VecDeque;
+ use std::sync::Arc;
+ 
+ use gpui::{
+@@ -18,7 +19,9 @@ use gpui::{
+ 
+ use super::parser::{Block, BlockTree, InlineRun, TableAlign};
+ use crate::syntax::cache::highlight_cached;
+-use crate::text::{range_rects, runs::runs_for_spans, SharedSelection};
++use crate::text::{
++    range_rects, runs::runs_for_spans, LinkFocus, SharedLinkHover, SharedSelection,
++};
+ use crate::theme::{Metrics, Theme};
+ 
+ // ── Metrics ──────────────────────────────────────────────────────────
+@@ -173,6 +176,10 @@ pub struct MdContext {
+     /// Called with the URL of the link under a click. Hit testing happens per
+     /// byte range inside the painted text, not per block.
+     pub on_link: Option<Arc<dyn Fn(&str)>>,
++    /// Called with the link below the pointer, or `None` when the pointer leaves it.
++    pub on_link_hover: Option<Arc<dyn Fn(Option<&str>, f32, f32)>>,
++    link_focuses: VecDeque<LinkFocus>,
++    link_hover_owner: SharedLinkHover,
+ }
+ 
+ impl MdContext {
+@@ -183,6 +190,8 @@ impl MdContext {
+         selection_wash: Hsla,
+         theme: Theme,
+         on_link: Option<Arc<dyn Fn(&str)>>,
++        on_link_hover: Option<Arc<dyn Fn(Option<&str>, f32, f32)>>,
++        link_focuses: Vec<LinkFocus>,
+         highlight_set: Option<Arc<crate::text::HighlightContext>>,
+     ) -> Self {
+         Self {
+@@ -194,6 +203,9 @@ impl MdContext {
+             highlight_set,
+             next_sub: 0,
+             on_link,
++            on_link_hover,
++            link_focuses: link_focuses.into(),
++            link_hover_owner: Arc::new(parking_lot::Mutex::new(None)),
+         }
+     }
+ 
+@@ -202,6 +214,45 @@ impl MdContext {
+         self.next_sub += 1;
+         sub
+     }
++
++    fn take_link_focuses(&mut self, count: usize) -> Vec<LinkFocus> {
++        (0..count).filter_map(|_| self.link_focuses.pop_front()).collect()
++    }
++}
++
++pub fn link_urls(tree: &BlockTree, theme: &Theme) -> Vec<String> {
++    fn runs(out: &mut Vec<String>, inline: &[InlineRun], theme: &Theme) {
++        out.extend(
++            flatten_runs(inline, theme, FontWeight::NORMAL)
++                .links
++                .into_iter()
++                .map(|(_, url)| url),
++        );
++    }
++    fn blocks(out: &mut Vec<String>, nodes: &[Block], theme: &Theme) {
++        for block in nodes {
++            match block {
++                Block::Paragraph { runs: inline } | Block::Heading { runs: inline, .. } => {
++                    runs(out, inline, theme)
++                }
++                Block::BlockQuote { children } => blocks(out, children, theme),
++                Block::List { items, .. } => {
++                    items.iter().for_each(|item| blocks(out, item, theme))
++                }
++                Block::Table { header, rows, .. } => {
++                    header.iter().for_each(|cell| runs(out, cell, theme));
++                    rows
++                        .iter()
++                        .flatten()
++                        .for_each(|cell| runs(out, cell, theme));
++                }
++                Block::CodeBlock { .. } | Block::Rule => {}
++            }
++        }
++    }
++    let mut out = Vec::new();
++    blocks(&mut out, &tree.blocks, theme);
++    out
+ }
+ 
+ // ── Blocks ───────────────────────────────────────────────────────────
+@@ -384,10 +435,14 @@ fn flat_text_element(flat: &FlatText, ctx: &mut MdContext) -> AnyElement {
+     // Selection and link interaction are independent: a toolbar can reasonably
+     // set `userSelect: "none"` and still want its links clickable, so this
+     // routes through `chrome_text` for the glyphs but keeps the link listener.
++    let link_focuses = ctx.take_link_focuses(flat.links.len());
+     crate::text::selectable_text(crate::text::SelectableText {
+         extra_wash: extra,
+         links: flat.links.clone(),
+         on_link: ctx.on_link.clone(),
++        on_link_hover: ctx.on_link_hover.clone(),
++        link_focuses,
++        link_hover_owner: Some(ctx.link_hover_owner.clone()),
+         selectable: ctx.selectable,
+         highlight: ctx
+             .highlight_set
+@@ -644,7 +699,7 @@ fn hairline(theme: &Theme, alpha: f32) -> Hsla {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+-    use crate::markdown::parser::InlineStyle;
++    use crate::markdown::parser::{parse, InlineStyle};
+ 
+     fn run(text: &str, style: InlineStyle) -> InlineRun {
+         InlineRun {
+@@ -689,6 +744,25 @@ mod tests {
+         assert_eq!(flat.runs[2].font.weight, FontWeight::SEMIBOLD);
+     }
+ 
++    #[test]
++    fn focus_urls_use_the_same_flattened_ranges_as_rendering() {
++        let tree = parse(
++            "😀 [plain](https://one.test) [](https://empty.test) [**styled** and *split*](https://two.test) [again](https://two.test)\n\n\
++             `[code](https://code.test)` ![image](https://image.test)\n\n\
++             | Name | Link |\n| --- | --- |\n| Row | [table](https://table.test) |",
++        );
++        assert_eq!(
++            link_urls(&tree, &Theme::dark()),
++            [
++                "https://one.test",
++                "https://two.test",
++                "https://two.test",
++                "https://image.test",
++                "https://table.test",
++            ],
++        );
++    }
++
+     #[test]
+     fn adjacent_inline_code_merges_into_one_wash() {
+         let theme = Theme::dark();
+diff --git a/packages/native/src/renderer.rs b/packages/native/src/renderer.rs
+index 32e614a..ad6d937 100644
+--- a/packages/native/src/renderer.rs
++++ b/packages/native/src/renderer.rs
+@@ -1709,6 +1709,31 @@ impl GpuixRenderer {
+         self.request_invalidate()
+     }
+ 
++    /// Release a transient data-URL image after React has removed every
++    /// matching `<img>` from the retained tree. The retained-source guard keeps
++    /// ordinary mounted icons and a snapshot awaiting its unmount commit from
++    /// being evicted and decoded again on the next paint.
++    #[napi]
++    pub fn release_image_data_url(&self, src: String) -> Result<bool> {
++        if retained_tree_uses_image_data_url(&self.tree.lock().unwrap(), &src) {
++            return Ok(false);
++        }
++
++        #[cfg(target_os = "macos")]
++        return update_window(move |_view, window, cx| {
++            crate::custom_elements::img::release_data_url_image(&src, window, cx)
++                .unwrap_or(false)
++        });
++
++        #[cfg(not(target_os = "macos"))]
++        {
++            let _ = src;
++            Err(Error::from_reason(
++                "Data-URL image release is currently available on macOS only",
++            ))
++        }
++    }
++
+     // ── Scroll API ───────────────────────────────────────────────────
+     // GpuixView syncs scroll handles and virtual list states to thread-local maps.
+ 
+@@ -5612,6 +5637,18 @@ fn resolve_styles(
+     Ok(resolved)
+ }
+ 
++pub(crate) fn retained_tree_uses_image_data_url(tree: &RetainedTree, src: &str) -> bool {
++    src.starts_with("data:")
++        && tree.elements.values().any(|element| {
++            element.element_type == "img"
++                && element
++                    .custom_props
++                    .get("src")
++                    .and_then(serde_json::Value::as_str)
++                    == Some(src)
++        })
++}
++
+ /// Apply a batch of mutation tuples to a RetainedTree.
+ /// Shared between GpuixRenderer::apply_batch and TestGpuixRenderer::apply_batch.
+ /// Returns accumulated destroyed IDs (as f64) from all destroyElement ops.
+@@ -5786,6 +5823,16 @@ pub struct ElementBounds {
+     pub height: f64,
+ }
+ 
++/// Test-support inspection of the two GPUI cache layers used by data-URL
++/// images. Production code only needs `releaseImageDataUrl`.
++#[cfg(any(test, feature = "test-support"))]
++#[derive(Debug, Clone)]
++#[cfg_attr(not(all(target_arch = "wasm32", target_os = "unknown")), napi(object))]
++pub struct ImageDataUrlCacheState {
++    pub asset_cached: bool,
++    pub atlas_cached: bool,
++}
++
+ impl ElementBounds {
+     pub(crate) fn from_painted(bounds: crate::automation::ElementBounds) -> Self {
+         Self {
+diff --git a/packages/native/src/test_renderer.rs b/packages/native/src/test_renderer.rs
+index 9a4cc1e..b2e931c 100644
+--- a/packages/native/src/test_renderer.rs
++++ b/packages/native/src/test_renderer.rs
+@@ -22,8 +22,8 @@ use gpui::AppContext as _;
+ use crate::element_tree::EventPayload;
+ use crate::renderer::{
+     apply_batch_to_tree, debug_frame_overlay_mode_name, debug_frame_overlay_stats_js,
+-    parse_debug_frame_overlay_mode, to_element_id, DebugFrameOverlayStats, EventCallback,
+-    GpuixView,
++    parse_debug_frame_overlay_mode, retained_tree_uses_image_data_url, to_element_id,
++    DebugFrameOverlayStats, EventCallback, GpuixView, ImageDataUrlCacheState,
+ };
+ use crate::retained_tree::RetainedTree;
+ 
+@@ -280,6 +280,50 @@ impl TestGpuixRenderer {
+         apply_batch_to_tree(&mut tree, json.as_bytes()).map_err(Error::from_reason)
+     }
+ 
++    /// Test the same guarded release path as the production renderer.
++    #[napi]
++    pub fn release_image_data_url(&self, src: String) -> Result<bool> {
++        if retained_tree_uses_image_data_url(&self.tree.lock().unwrap(), &src) {
++            return Ok(false);
++        }
++        with_test_state(|cx, window, _view| {
++            cx.update_window(window, |_, window, app| {
++                crate::custom_elements::img::release_data_url_image(&src, window, app)
++                    .unwrap_or(false)
++            })
++            .map_err(|error| Error::from_reason(error.to_string()))
++        })
++    }
++
++    /// Test-only cache probe used to prove that both decoded CPU assets and
++    /// current-window atlas tiles are released. Invalid/non-data sources are
++    /// reported as null and never loaded.
++    #[napi]
++    pub fn inspect_image_data_url_cache(
++        &self,
++        src: String,
++    ) -> Result<Option<ImageDataUrlCacheState>> {
++        with_test_state(|cx, window, _view| {
++            cx.update_window(window, |_, window, app| {
++                crate::custom_elements::img::data_url_image_cache_state(&src, window, app).map(
++                    |(asset_cached, atlas_cached)| ImageDataUrlCacheState {
++                        asset_cached,
++                        atlas_cached,
++                    },
++                )
++            })
++            .map_err(|error| Error::from_reason(error.to_string()))
++        })
++    }
++
++    /// Test-only result captured while an `<img>` render was inside GPUI's
++    /// rendered-view scope: `[decoderWasPending, pendingEntryWasRemoved]`.
++    #[napi]
++    pub fn take_pending_image_release_test_result(&self) -> Option<Vec<bool>> {
++        crate::custom_elements::img::take_pending_release_test_result()
++            .map(|(pending, removed)| vec![pending, removed])
++    }
++
+     // ── Test-specific methods ────────────────────────────────────────
+ 
+     /// Notify the view entity and run GPUI until parked.
+diff --git a/packages/native/src/text/mod.rs b/packages/native/src/text/mod.rs
+index 107663c..dfca470 100644
+--- a/packages/native/src/text/mod.rs
++++ b/packages/native/src/text/mod.rs
+@@ -16,6 +16,6 @@ pub mod selection;
+ pub use paint::{
+     chrome_text, log_painted_text, painted_highlights, painted_text, range_rects,
+     record_start_region, selectable_text, selection_frame_reset, selection_key, HighlightSource,
+-    PaintedHighlight, SelectableText, SharedSelection,
++    LinkFocus, PaintedHighlight, SelectableText, SharedLinkHover, SharedSelection,
+ };
+ pub use search::{GroupList, HighlightContext, HighlightSet};
+diff --git a/packages/native/src/text/paint.rs b/packages/native/src/text/paint.rs
+index 7fa9657..60eb77b 100644
+--- a/packages/native/src/text/paint.rs
++++ b/packages/native/src/text/paint.rs
+@@ -212,6 +212,12 @@ pub struct SelectableText {
+     pub links: Vec<(Range<usize>, String)>,
+     /// Called with the payload of the range under a click.
+     pub on_link: Option<Arc<dyn Fn(&str)>>,
++    /// Called while the pointer moves over a link range, or with `None` when it leaves.
++    pub on_link_hover: Option<Arc<dyn Fn(Option<&str>, f32, f32)>>,
++    /// Keyboard focus surfaces for the link ranges, in the same order as `links`.
++    pub link_focuses: Vec<LinkFocus>,
++    /// Which native text run currently owns the Markdown link hover.
++    pub link_hover_owner: Option<SharedLinkHover>,
+     /// False under `userSelect: "none"`: the text is still painted, logged and
+     /// clickable, but it does not join the selection registry.
+     pub selectable: bool,
+@@ -240,6 +246,9 @@ impl SelectableText {
+             extra_wash: None,
+             links: Vec::new(),
+             on_link: None,
++            on_link_hover: None,
++            link_focuses: Vec::new(),
++            link_hover_owner: None,
+             selectable: true,
+             group: None,
+             highlight: None,
+@@ -260,6 +269,9 @@ pub fn selectable_text(opts: SelectableText) -> gpui::AnyElement {
+         extra_wash,
+         links,
+         on_link,
++        on_link_hover,
++        link_focuses,
++        link_hover_owner,
+         selectable,
+         group,
+         highlight,
+@@ -271,6 +283,9 @@ pub fn selectable_text(opts: SelectableText) -> gpui::AnyElement {
+         None => StyledText::new(text.clone()),
+     };
+     let layout = styled.layout().clone();
++    let paint_on_link = on_link.clone();
++    let paint_on_link_hover = on_link_hover.clone();
++    let paint_link_focuses = link_focuses.clone();
+ 
+     let underlay = canvas(
+         |_, _, _| (),
+@@ -316,19 +331,147 @@ pub fn selectable_text(opts: SelectableText) -> gpui::AnyElement {
+                 });
+             }
+             PAINTED.with(|p| p.borrow_mut().push(text.clone()));
+-            if let Some(on_link) = &on_link {
++            if let Some(on_link) = &paint_on_link {
+                 register_link_listener(window, &layout, &links, on_link, &selection);
+             }
++            if let Some(on_link_hover) = &paint_on_link_hover {
++                register_link_hover_listener(
++                    window,
++                    &layout,
++                    &links,
++                    sub,
++                    link_hover_owner.as_ref(),
++                    on_link_hover,
++                );
++            }
++            for ((range, _), focus) in links.iter().zip(&paint_link_focuses) {
++                let rects = range_rects(&layout, range, 0.0, 0.0);
++                let position = rects.first().map(|rect| {
++                    (f32::from(rect.origin.x), f32::from(rect.origin.y + rect.size.height))
++                });
++                *focus.position.lock() = position;
++                let is_focused = focus.handle.is_focused(window);
++                let changed = {
++                    let mut previous = focus.focused.lock();
++                    let changed = *previous != is_focused;
++                    *previous = is_focused;
++                    changed
++                };
++                if changed {
++                    (focus.on_focus_change)(is_focused, position);
++                }
++                if is_focused {
++                    for rect in rects {
++                        window.paint_quad(quad(
++                            rect,
++                            px(3.0),
++                            focus.focus_color,
++                            px(1.0),
++                            focus.focus_border,
++                            BorderStyle::default(),
++                        ));
++                    }
++                }
++            }
+         },
+     )
+     .absolute()
+     .size_full();
+ 
+-    div()
++    let mut container = div()
+         .relative()
+         .child(underlay)
+-        .child(styled)
+-        .into_any_element()
++        .child(styled);
++    for (index, focus) in link_focuses.into_iter().enumerate() {
++        use gpui::prelude::*;
++        let handle = focus.handle.clone();
++        let url = focus.url.clone();
++        let on_link = on_link.clone();
++        container = container.child(
++            div()
++                .id(SharedString::from(format!("__gpuix_link_{element_id}_{sub}_{index}")))
++                .absolute()
++                .size_full()
++                .track_focus(&handle)
++                .tab_stop(true)
++                .tab_index(0)
++                .role(gpui::Role::Link)
++                .aria_label(url.clone())
++                .on_key_down(move |event, _window, cx| {
++                    let modifiers = &event.keystroke.modifiers;
++                    let plain = !modifiers.control
++                        && !modifiers.alt
++                        && !modifiers.shift
++                        && !modifiers.platform;
++                    if plain && matches!(event.keystroke.key.as_str(), "enter" | "space") {
++                        if let Some(on_link) = &on_link {
++                            on_link(&url);
++                        }
++                        cx.stop_propagation();
++                    }
++                }),
++        );
++    }
++    container.into_any_element()
++}
++
++#[derive(Clone)]
++pub struct LinkFocus {
++    pub handle: gpui::FocusHandle,
++    pub url: String,
++    pub position: Arc<parking_lot::Mutex<Option<(f32, f32)>>>,
++    pub focused: Arc<parking_lot::Mutex<bool>>,
++    pub on_focus_change: Arc<dyn Fn(bool, Option<(f32, f32)>)>,
++    pub focus_color: Hsla,
++    pub focus_border: Hsla,
++}
++
++pub type SharedLinkHover = Arc<parking_lot::Mutex<Option<usize>>>;
++
++fn register_link_hover_listener(
++    window: &mut Window,
++    layout: &TextLayout,
++    links: &[(Range<usize>, String)],
++    owner: usize,
++    hover_owner: Option<&SharedLinkHover>,
++    on_link_hover: &Arc<dyn Fn(Option<&str>, f32, f32)>,
++) {
++    use gpui::{DispatchPhase, MouseMoveEvent};
++
++    let (layout, links, hover_owner, on_link_hover) = (
++        layout.clone(),
++        links.to_vec(),
++        hover_owner.cloned(),
++        on_link_hover.clone(),
++    );
++    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, _cx| {
++        if phase != DispatchPhase::Bubble {
++            return;
++        }
++        if !layout.bounds().contains(&event.position) {
++            if hover_owner
++                .as_ref()
++                .is_some_and(|state| state.lock().as_ref() == Some(&owner))
++            {
++                *hover_owner.as_ref().unwrap().lock() = None;
++                on_link_hover(None, f32::from(event.position.x), f32::from(event.position.y));
++            }
++            return;
++        }
++        let value = layout
++            .index_for_position(event.position)
++            .ok()
++            .and_then(|index| links.iter().find(|(range, _)| range.contains(&index)))
++            .map(|(_, payload)| payload.as_str());
++        if let Some(state) = &hover_owner {
++            *state.lock() = value.map(|_| owner);
++        }
++        on_link_hover(
++            value,
++            f32::from(event.position.x),
++            f32::from(event.position.y),
++        );
++    });
+ }
+ 
+ /// Paint one run's highlight washes and log their geometry.
+Submodule zed contains modified content
+diff --git a/zed/crates/gpui_apple/src/metal_atlas.rs b/zed/crates/gpui_apple/src/metal_atlas.rs
+index 7ff1170..bd9cc46 100644
+--- a/zed/crates/gpui_apple/src/metal_atlas.rs
++++ b/zed/crates/gpui_apple/src/metal_atlas.rs
+@@ -128,6 +128,11 @@ impl PlatformAtlas for MetalAtlas {
+             }
+         }
+     }
++
++    #[cfg(any(test, feature = "test-support"))]
++    fn contains(&self, key: &AtlasKey) -> bool {
++        self.state.lock().tiles_by_key.contains_key(key)
++    }
+ }
+ 
+ impl MetalAtlasState {
