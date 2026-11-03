@@ -5,7 +5,7 @@
     "": {
       "name": "lume",
       "dependencies": {
-        "@anthropic-ai/sdk": "^0.127.0",
+        "@anthropic-ai/sdk": "^1.3.0",
         "@gpuix/react": "0.8.0",
         "chrono-node": "2.10.1",
         "domhandler": "5.0.3",
@@ -42,7 +42,7 @@
     "zod": "^4.6.7",
   },
   "packages": {
-    "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.127.0", "", { "dependencies": { "json-schema-to-ts": "^3.1.1", "standardwebhooks": "^1.0.0" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-OKiVbG9LHCxjn4fBJZJFy/Bz3hqE1RYpwaeSEDNheQnvz0XNKmGT/Lhkz2Sf1a27Ldt3vVv+BkU81I0U/8EpoQ=="],
+    "@anthropic-ai/sdk": ["@anthropic-ai/sdk@1.3.0", "", { "dependencies": { "@opentelemetry/api": "^1.4.1", "json-schema-to-ts": "^3.1.1", "standardwebhooks": "^1.0.0" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-k7z9BlLLPxfZH+ov7dS6EnaN/wiZeV8YNT1LZfrpAHIy7oY7pHr4UzirF9f2OlHtFEnRBOX+AZQ91Y5fK+TPTw=="],
 
     "@babel/runtime": ["@babel/runtime@7.29.7", "", {}, "sha512-Nq8OhGWiZIZGV6hLHoyAKLLcJihP/xFeBMGJoUrxTX2psI8dCifzLhZISFb+VWS3wFMRDmCGw5R+dOySCqPLhw=="],
 
@@ -55,6 +55,8 @@
     "@gpuix/native-win32-x64-msvc": ["@gpuix/native-win32-x64-msvc@0.8.0", "", { "os": "win32", "cpu": "x64" }, "sha512-Hs8ocB9Lta93lqsbHGaLYbGBX8popxomkq1TH3XeIKkGfheSI8bAOgztO+rDQC8U05eUnNEMkVFeYysFrvnsrw=="],
 
     "@gpuix/react": ["@gpuix/react@0.8.0", "", { "dependencies": { "@gpuix/native": "^0.8.0", "eventsource-parser": "^4.1.0", "react-reconciler": "^0.31.0", "zod": "^4.4.3" }, "peerDependencies": { "react": "^18.0.0 || ^19.0.0" } }, "sha512-brJuiYTH2lYbbSAzuqUMzAp/JfC8oytQ+jFhKzj7TVgkS3bBleco8Tp6B78DXlYYLbVadTncWBQlJAbWAwF9ow=="],
+
+    "@opentelemetry/api": ["@opentelemetry/api@1.10.0", "", {}, "sha512-lMkyes8iHrG+mk6WH7X70MdCLI2RS0FwNBY1PyQ8UemaijE2m5mv5A0Niy3HtbYTFrgkUEQjFMXmSAk2hQDuPQ=="],
 
     "@pinojs/redact": ["@pinojs/redact@0.4.0", "", {}, "sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg=="],
 
