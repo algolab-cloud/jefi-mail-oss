@@ -34,7 +34,25 @@ describe('alignStringTable', () => {
     expect(alignStringTable(image(200))).toBeNull()
   })
 
-  test('refuses an image whose string table is not last', () => {
-    expect(() => alignStringTable(Buffer.concat([image(196), Buffer.alloc(4)]))).toThrow('not the last')
+  test('moves the table into zero padding after it, without growing the file', () => {
+    // Xcode 16's linker pads the image after the string table.
+    const padded = Buffer.concat([image(196), Buffer.alloc(8)])
+    padded.writeBigUInt64LE(20n, 32 + 48) // __LINKEDIT covers the padding
+    const out = alignStringTable(padded)!
+    expect(out.readUInt32LE(104 + 16)).toBe(200)
+    expect(out.toString('latin1', 200, 204)).toBe('abc\0')
+    expect(out.length).toBe(208)
+    expect(out.readBigUInt64LE(32 + 48)).toBe(20n)
+  })
+
+  test('grows the file and __LINKEDIT by what the padding behind cannot cover', () => {
+    const out = alignStringTable(Buffer.concat([image(196), Buffer.alloc(2)]))!
+    expect(out.readUInt32LE(104 + 16)).toBe(200)
+    expect(out.length).toBe(204)
+    expect(out.readBigUInt64LE(32 + 48)).toBe(16n)
+  })
+
+  test('refuses an image with data after its string table', () => {
+    expect(() => alignStringTable(Buffer.concat([image(196), Buffer.from([1, 0, 0, 0])]))).toThrow('not the last')
   })
 })

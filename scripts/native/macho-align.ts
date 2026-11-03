@@ -2,6 +2,7 @@
 // macOS 27's dyld refuses a Mach-O whose symbol string table doesn't start on an 8-byte boundary
 // ("mis-aligned LINKEDIT string pool"), and ld-27xxx can leave it 4-aligned. The table is the last
 // thing in __LINKEDIT once the code signature is gone, so it can be moved by padding in front of it.
+// Older linkers (Xcode 16) leave zero padding after it, which the move uses up first.
 // ---------------------------------------------------------------------------
 
 const MH_MAGIC_64 = 0xfeedfacf
@@ -29,9 +30,14 @@ export function alignStringTable(file: Buffer): Buffer | null {
   const offset = file.readUInt32LE(symtab + 16)
   const pad = (8 - (offset % 8)) % 8
   if (!pad) return null
-  if (offset + file.readUInt32LE(symtab + 20) !== file.length) throw new Error('The string table is not the last thing in the image.')
-  const out = Buffer.concat([file.subarray(0, offset), Buffer.alloc(pad), file.subarray(offset)])
+  const end = offset + file.readUInt32LE(symtab + 20)
+  const tail = file.subarray(end)
+  if (tail.some((byte) => byte !== 0)) throw new Error(`The string table is not the last thing in the image (${tail.length} bytes of data follow it).`)
+  // Padding in front, taken out of the zeros behind; the file grows only by what they can't cover.
+  const out = Buffer.concat([file.subarray(0, offset), Buffer.alloc(pad), file.subarray(offset, end), tail.subarray(Math.min(pad, tail.length))])
   out.writeUInt32LE(offset + pad, symtab + 16)
-  out.writeBigUInt64LE(out.readBigUInt64LE(linkedit + 48) + BigInt(pad), linkedit + 48)
+  const segmentEnd = out.readBigUInt64LE(linkedit + 40) + out.readBigUInt64LE(linkedit + 48)
+  const tableEnd = BigInt(end + pad)
+  if (segmentEnd < tableEnd) out.writeBigUInt64LE(out.readBigUInt64LE(linkedit + 48) + tableEnd - segmentEnd, linkedit + 48)
   return out
 }
