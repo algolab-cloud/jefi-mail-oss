@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 — 2026-11-03
 
 - Jefi Mail is free and open source under the GPL. The trial and licence keys are gone: everything works, with nothing to buy.
 - All Inboxes and All Starred, for when you have more than one account.
@@ -9,6 +9,8 @@
 - Keyboard shortcuts can be single keys, ⌘ shortcuts or off, and each one can be changed in Settings.
 - A cleaner reader: one message opens at a time in full, and the toolbar is grouped. Find in the conversation is ⌘F.
 - Passwords and keys sit in one encrypted vault, so macOS asks for Keychain access once, not once per account.
+
+[Full release notes](docs/releases/0.9.0.md)
 
 ## 0.8.15 — 2026-10-02
 
