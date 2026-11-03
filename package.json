@@ -43,7 +43,7 @@
     "@types/smtp-server": "^3.5.13",
     "hoodiecrow-imap": "^2.1.0",
     "smtp-server": "^3.21.3",
-    "typescript": "~5.9.3"
+    "typescript": "~7.0.2"
   },
   "overrides": {
     "ip-address": "^10.7.5",
