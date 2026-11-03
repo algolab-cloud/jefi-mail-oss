@@ -42,6 +42,8 @@ export const countTextMatches = (text: string, query: string, maximum = Number.P
 export type ReaderSearchRow = { key: string; text: string; lower?: string }
 export type ReaderMatch = { key: string; rowIndex: number; occurrence: number; start: number; end: number }
 
+const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" }
+
 /** Plain text close to what GPUIX Markdown paints, used only for body-local find indexing. */
 export function markdownSearchText(source: string) {
   return source
@@ -54,11 +56,8 @@ export function markdownSearchText(source: string) {
     .replace(/\\([\\`*_{}\[\]()#+\-.!<>|])/g, '$1')
     .replace(/(\*\*|__|~~|`|\*|_)/g, '')
     .replace(/ {2}\n/g, '\n')
-    .replaceAll('&amp;', '&')
-    .replaceAll('&lt;', '<')
-    .replaceAll('&gt;', '>')
-    .replaceAll('&quot;', '"')
-    .replaceAll('&#39;', "'")
+    // One pass, so "&amp;lt;" reads "&lt;" as it does on screen, not "<".
+    .replace(/&(amp|lt|gt|quot|#39);/g, (_, name: keyof typeof ENTITIES) => ENTITIES[name])
 }
 
 /** Find body occurrences by rendered row, so each row can own its native active highlight index. */

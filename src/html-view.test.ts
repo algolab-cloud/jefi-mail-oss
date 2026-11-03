@@ -185,6 +185,15 @@ test('the content policy leads the page, whatever comes before or looks like a h
   // A message's own doctype stays first, so it renders in the mode it asked for.
   const legacy = mailPage('<!-- sent by X --> <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"><html><head></head><body>x</body></html>', false)
   expect(legacy.startsWith('<!-- sent by X --> <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"><html><head><meta http-equiv="Content-Security-Policy"')).toBe(true)
+  expect(mailPage('<!-- a - b --->\n<!doctype html><p>x', false).startsWith('<!-- a - b --->\n<!doctype html><html><head><meta')).toBe(true)
+})
+
+test('a message made of empty comments is placed quickly', () => {
+  // Once a crafted message: the leading-doctype pattern backtracked exponentially on it.
+  const started = performance.now()
+  const page = mailPage(`<!--${'--><!--'.repeat(5000)}`, false)
+  expect(performance.now() - started).toBeLessThan(500)
+  expect(page.startsWith('<!doctype html><html><head><meta http-equiv="Content-Security-Policy"')).toBe(true)
 })
 
 test('links to a spot in the message scroll there; other links go to review, other loads stop', () => {

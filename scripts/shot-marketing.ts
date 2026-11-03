@@ -89,7 +89,7 @@ const inviteRaw = (i: Invite) => {
     `DTSTART;TZID=${zone}:${local(i.start)}`,
     `DTEND;TZID=${zone}:${local(i.start + i.minutes * MINUTE)}`,
     `SUMMARY:${i.summary}`,
-    `LOCATION:${i.location.replace(/,/g, '\\,')}`,
+    `LOCATION:${i.location.replace(/[\\;,]/g, '\\$&')}`,
     `DESCRIPTION:${i.description}`,
     `ORGANIZER;CN=${i.from[0]}:mailto:${i.from[1]}`,
     `ATTENDEE;CN=${i.from[0]};PARTSTAT=ACCEPTED:mailto:${i.from[1]}`,

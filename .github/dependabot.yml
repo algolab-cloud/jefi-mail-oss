@@ -1,5 +1,6 @@
 # Security updates open on their own as soon as an advisory lands (they're switched on in the repo's
-# settings by scripts/release/protect-repo.sh). These are the routine updates on top.
+# settings by scripts/release/protect-repo.sh), majors included. These are the routine updates on
+# top: minor and patch only, since a major version usually needs code changes. Take one on purpose.
 version: 2
 updates:
   # The workflows pin every action to a commit; this keeps those pins current.
@@ -11,7 +12,7 @@ updates:
       actions:
         patterns: ["*"]
 
-  # The app. One pull request a week for the minor and patch updates; majors one at a time.
+  # The app. One pull request a week for the minor and patch updates.
   - package-ecosystem: bun
     directory: /
     schedule:
@@ -23,6 +24,8 @@ updates:
     ignore:
       # Patched in patches/ against this exact version: moving it means redoing the patch.
       - dependency-name: "@gpuix/*"
+      - dependency-name: "*"
+        update-types: [version-update:semver-major]
 
   - package-ecosystem: npm
     directory: /integrations/raycast
@@ -31,3 +34,6 @@ updates:
     groups:
       minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      - dependency-name: "*"
+        update-types: [version-update:semver-major]

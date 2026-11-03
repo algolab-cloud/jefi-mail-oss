@@ -529,8 +529,13 @@ export function stripSpeculativeLinks(html: string): string {
   })
 }
 
-/** A doctype at the very start of the message (after whitespace and comments), which must stay first. */
-const LEADING_DOCTYPE = /^(?:\s|<!--[\s\S]*?-->)*<!doctype[^>]*>/i
+/**
+ * A doctype at the very start of the message (after whitespace and comments), which must stay first.
+ * A comment's body can't contain `-->`, so each comment matches one way only: a lazy `[\s\S]*?`
+ * could also swallow the next comment, and a message of many `<!----><!---->` then backtracks
+ * exponentially before it fails.
+ */
+const LEADING_DOCTYPE = /^(?:\s|<!--(?:[^-]|-(?!->))*-->)*<!doctype[^>]*>/i
 
 /** The message page: its HTML under a policy that allows inline styles and images, nothing else. */
 export function mailPage(html: string, allowRemoteImages: boolean) {

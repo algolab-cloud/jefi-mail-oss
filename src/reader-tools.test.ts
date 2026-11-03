@@ -63,6 +63,10 @@ describe('reader find and print', () => {
   })
 })
 
+test('find text decodes entities once, as the reader shows them', () => {
+  expect(markdownSearchText('Write &amp;lt;b&amp;gt; for &lt;b&gt; &amp; &quot;bold&quot;')).toBe('Write &lt;b&gt; for <b> & "bold"')
+})
+
 test('precomputed lowercase text finds exactly what lowercasing per search finds', () => {
   const rows = [{ key: 'a', text: 'Quarterly QUARTER report' }, { key: 'b', text: 'no match here' }, { key: 'c', text: 'quarter' }]
   const cached = rows.map((row) => ({ ...row, lower: row.text.toLocaleLowerCase() }))

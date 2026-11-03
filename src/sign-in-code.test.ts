@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { findSignIn, parseSignIn } from './sign-in-code'
+import { findSignIn, htmlText, parseSignIn } from './sign-in-code'
 
 const code = (subject: string, text: string | null, html: string | null = null) => {
   const found = findSignIn({ subject, text, html })
@@ -52,6 +52,11 @@ describe('magic links', () => {
     const html = '<a href="https://shop.example.com/sale">Sign in to see deals</a>'
     expect(findSignIn({ subject: 'Weekend sale: 30% off', text: null, html })).toBeNull()
   })
+})
+
+test('the text of an HTML mail decodes entities once and drops scripts', () => {
+  expect(htmlText('<p>Type &amp;lt;code&amp;gt;&nbsp;&lt;here&gt;</p>')).toBe(' Type &lt;code&gt; <here>\n')
+  expect(htmlText('<script>var code = 111111</script >Your code is 222222')).toBe(' Your code is 222222')
 })
 
 test('stored values read back, and junk reads as nothing', () => {

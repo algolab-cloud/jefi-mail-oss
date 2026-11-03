@@ -21,18 +21,16 @@ const LINK_SUBJECT =
 const LINK_TEXT = /\b(?:sign[- ]?in|log[- ]?in|login|verify|confirm|continue|magic link|open (?:the )?link)\b/i
 const LINK_URL = /(?:login|log-in|signin|sign-in|sign_in|magic|verify|verification|confirm|auth|token|otp)/i
 
+const ENTITIES: Record<string, string> = { nbsp: ' ', amp: '&', lt: '<', gt: '>', '#39': "'", apos: "'", quot: '"' }
+
 /** Text a person reads: tags gone, entities decoded, blocks as lines. */
 export function htmlText(html: string): string {
   return html
-    .replace(/<(script|style|head)\b[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<(script|style|head)\b[\s\S]*?<\/\1[^>]*>/gi, ' ')
     .replace(/<br\s*\/?>|<\/(?:p|div|tr|li|h\d|table|td)>/gi, '\n')
     .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&quot;/gi, '"')
+    // One pass, so "&amp;lt;" reads "&lt;" as it does on screen, not "<".
+    .replace(/&(nbsp|amp|lt|gt|#39|apos|quot);/gi, (_, name: string) => ENTITIES[name.toLowerCase()]!)
     .replace(/[ \t]+/g, ' ')
 }
 

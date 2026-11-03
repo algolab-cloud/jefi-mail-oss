@@ -77,9 +77,12 @@ function photoFile(src: string): string | null {
   try {
     const dir = resolve(tmpdir(), 'jefi-faces')
     const path = resolve(dir, `${createHash('sha256').update(match[2]!).digest('hex').slice(0, 24)}.${match[1]!.toLowerCase()}`)
-    if (!existsSync(path)) {
-      mkdirSync(dir, { recursive: true })
-      writeFileSync(path, Buffer.from(match[2]!, 'base64'))
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    // Create-only ('wx'), private to this user: no gap between checking for the file and writing it.
+    try {
+      writeFileSync(path, Buffer.from(match[2]!, 'base64'), { flag: 'wx', mode: 0o600 })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
     }
     return path
   } catch {

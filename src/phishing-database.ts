@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 export const PHISHING_DATABASE_SOURCES = Object.freeze({
@@ -650,9 +650,16 @@ export function createPhishingDatabase(options: CreatePhishingDatabaseOptions): 
 
   const initialization = (async () => {
     try {
-      const file = await stat(snapshotPath)
-      if (file.size > Math.max(maxBytes * 3, maxFallbackBytes * 2)) throw new Error('Stored phishing database exceeds its size limit.')
-      const parsed = JSON.parse(await readFile(snapshotPath, 'utf8')) as StoredDatabase
+      // One open file for the size check and the read, so a swapped file can't slip past the limit.
+      const handle = await open(snapshotPath, 'r')
+      let text: string
+      try {
+        if ((await handle.stat()).size > Math.max(maxBytes * 3, maxFallbackBytes * 2)) throw new Error('Stored phishing database exceeds its size limit.')
+        text = await handle.readFile('utf8')
+      } finally {
+        await handle.close()
+      }
+      const parsed = JSON.parse(text) as StoredDatabase
       const loaded = await setsFromStored(parsed, maxEntries)
       if (closed) return
       setIndex(Object.freeze(loaded))

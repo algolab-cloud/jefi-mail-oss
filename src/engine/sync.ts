@@ -778,7 +778,7 @@ export const parseReferences = (headers: string) => {
   return value.match(/<[^<>\s]+>/g) ?? []
 }
 
-const stripTags = (html: string) => html.replace(/<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' ')
+const stripTags = (html: string) => html.replace(/<style\b[\s\S]*?<\/style[^>]*>|<script\b[\s\S]*?<\/script[^>]*>/gi, ' ').replace(/<[^>]+>/g, ' ')
 
 /** The list preview: what's new in the message, without the quoted history (or its "On … wrote:"). */
 export const snippetOf = (text: string) =>
