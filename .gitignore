@@ -50,3 +50,6 @@ opencode.json
 
 # Marketing images the scripts render (tweet-images.ts and friends): regenerable
 /output/
+
+# Local search config for the graft indexer
+.ignore
