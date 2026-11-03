@@ -18,4 +18,5 @@ jobs:
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: high
-          deny-licenses: SSPL-1.0, BUSL-1.1, Commons-Clause
+          # SPDX ids only: the action rejects anything else (Commons Clause has none) and stops.
+          deny-licenses: SSPL-1.0, BUSL-1.1

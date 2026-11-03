@@ -1,6 +1,6 @@
 import markSvg from '../assets/brand/mark.svg' with { type: 'text' }
 import type { Pointer } from 'bun:ffi'
-import { alloc, available, cls, makeObject, msg, msgBool, msgBoolResult, msgDoubleReturn, msgGetValue, msgLong, msgRectObj, msgRectReturn, msgSize, nsString, sel } from './objc'
+import { alloc, available, cls, makeObject, msg, msgBool, msgBoolResult, msgDoubleReturn, msgGetValue, msgLong, msgRectObj, msgRectReturn, msgSize, nsString, sel, type Id } from './objc'
 import { APP_NAME } from '../version'
 
 // ---------------------------------------------------------------------------
@@ -14,10 +14,10 @@ const IMAGE_LEFT = 2
 /** The mark's height in the bar, in points; menu bar symbols sit around 14–16pt. */
 const MARK_HEIGHT = 11
 
-export type StatusItem = { button: Pointer; setTitle: (title: string) => void; click: () => void; screenFrame: () => { x: number; y: number; width: number; height: number } | null; snapshot: (path: string) => boolean; remove: () => void }
+export type StatusItem = { button: Id; setTitle: (title: string) => void; click: () => void; screenFrame: () => { x: number; y: number; width: number; height: number } | null; snapshot: (path: string) => boolean; remove: () => void }
 
 /** An object's frame through KVC (an NSValue), read without a struct-return call: [x, y, width, height]. */
-function rectOf(object: Pointer | null, key = 'frame'): number[] | null {
+function rectOf(object: Id, key = 'frame'): number[] | null {
   const value = object && msg(object, 'valueForKey:', nsString(key))
   if (!value) return null
   const bytes = new Float64Array(4)
@@ -28,7 +28,7 @@ function rectOf(object: Pointer | null, key = 'frame'): number[] | null {
 let clickHandler: (() => void) | null = null
 
 /** The mark as a template NSImage, from the same SVG the app draws (the artwork is solid black on clear). */
-function markImage(): Pointer | null {
+function markImage(): Id {
   const bytes = Buffer.from(markSvg)
   const data = msg(cls('NSData'), 'dataWithBytes:length:', bytes as unknown as Pointer, bytes.length as unknown as Pointer)
   const image = msg(alloc('NSImage'), 'initWithData:', data)

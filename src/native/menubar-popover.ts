@@ -1,5 +1,4 @@
-import type { Pointer } from 'bun:ffi'
-import { alloc, available, callBlockWithInt, cls, fromNSString, loadWebKit, makeObject, msg, msgBool, msgBoolResult, msgGetValue, msgIndex, msgInt, msgLong, msgRectObj, msgShowRelative, msgSize, nsString, release } from './objc'
+import { alloc, available, callBlockWithInt, cls, fromNSString, loadWebKit, makeObject, msg, msgBool, msgBoolResult, msgGetValue, msgIndex, msgInt, msgLong, msgRectObj, msgShowRelative, msgSize, nsString, release, type Id } from './objc'
 
 // ---------------------------------------------------------------------------
 // The menu bar panel: an NSPopover (transient, so an outside click or Esc closes it, with the system's
@@ -17,7 +16,7 @@ const MIN_Y_EDGE = 1
 const POLICY_CANCEL = 0
 const POLICY_ALLOW = 1
 
-type Popover = { popover: Pointer; web: Pointer }
+type Popover = { popover: Id; web: Id }
 
 let panel: Popover | null = null
 let onMessage: ((raw: string) => void) | null = null
@@ -103,7 +102,7 @@ const appearanceFor = (look: Look | null) => (look ? msg(cls('NSAppearance'), 'a
  * menu bar, like the system's own extras, and the page follows it through prefers-color-scheme, live
  * as the system appearance changes. Nothing is painted under the page: the glass is the background.
  */
-export function showPanel(button: Pointer, html: string) {
+export function showPanel(button: Id, html: string) {
   if (!available) return false
   panel ??= build()
   if (!panel) return false
@@ -153,7 +152,7 @@ export const panelWindowNumber = () => (panel && panelShown() ? msgInt(msg(panel
 /** The popover's window in screen points, top-left origin (what `screencapture -R` takes), for screenshots of the glass in place. */
 export function panelScreenFrame(): number[] | null {
   if (!panel || !panelShown()) return null
-  const rect = (object: Pointer | null) => {
+  const rect = (object: Id) => {
     const value = object && msg(object, 'valueForKey:', nsString('frame'))
     if (!value) return null
     const bytes = new Float64Array(4)
@@ -171,7 +170,7 @@ export function panelScreen(): number[] | null {
   if (!panel || !panelShown()) return null
   const screen = msg(msg(panel.web, 'window'), 'screen')
   if (!screen) return null
-  const rect = (object: Pointer | null) => {
+  const rect = (object: Id) => {
     const value = object && msg(object, 'valueForKey:', nsString('frame'))
     if (!value) return null
     const bytes = new Float64Array(4)

@@ -1,8 +1,7 @@
-import type { Pointer } from 'bun:ffi'
 import { appendFileSync } from 'node:fs'
 import { onOverlaysChange, overlaysOpen } from '../overlays'
 import { snapshotMailWebView } from './mail-snapshot'
-import { alloc, available, callBlockWithInt, cls, fromNSString, loadWebKit, makeObject, msg, msgBool, msgBoolResult, msgGetValue, msgIndex, msgInt, msgRect, msgRectObj, nsString, release, msgDouble } from './objc'
+import { alloc, available, callBlockWithInt, cls, fromNSString, loadWebKit, makeObject, msg, msgBool, msgBoolResult, msgGetValue, msgIndex, msgInt, msgRect, msgRectObj, nsString, release, msgDouble, type Id } from './objc'
 
 // ---------------------------------------------------------------------------
 // One system WebKit view for reading HTML mail in "Full" mode, laid over the reading pane.
@@ -19,21 +18,21 @@ export const fullRenderingAvailable = available
 
 type Frame = { x: number; y: number; width: number; height: number }
 type LinkPosition = { x: number; y: number }
-type SnapshotIdentity = { generation: number; web: Pointer | null; page: string; navigation: Pointer | null }
+type SnapshotIdentity = { generation: number; web: Id; page: string; navigation: Id }
 
 const WK_NAVIGATION_LINK = 0
 const POLICY_CANCEL = 0
 const POLICY_ALLOW = 1
 
-let view: Pointer | null = null
+let view: Id = null
 /** Clips the web view to the reader's scroll area, so it never covers the header or composer. */
-let clipper: Pointer | null = null
+let clipper: Id = null
 /** Placed and meant to be seen (independent of popovers covering it for a moment). */
 let placed = false
-let delegate: Pointer | null = null
+let delegate: Id = null
 let shown = ''
 let loadedShown = ''
-let expectedNavigation: Pointer | null = null
+let expectedNavigation: Id = null
 let onLink: ((url: string, position?: LinkPosition) => void) | null = null
 let positionedWindowHeight = 0
 let positionedFrame: Frame | null = null
@@ -285,7 +284,7 @@ function beginOverlaySnapshot(onScreen: boolean) {
   })
 }
 
-function hostWindowContent(): Pointer | null {
+function hostWindowContent(): Id {
   const windows = msg(msg(cls('NSApplication'), 'sharedApplication'), 'windows')
   const count = msgInt(windows, 'count')
   for (let i = 0; i < count; i++) {
@@ -312,7 +311,7 @@ export function navigationPolicy(url: string, isLink: boolean): NavigationPolicy
 /** Corner radius of the mail page, natively and in the placeholder and snapshot under it. */
 export const MAIL_CORNER_RADIUS = 12
 
-function ensureView(): Pointer | null {
+function ensureView(): Id {
   if (view) return view
   const content = hostWindowContent()
   if (!content) return null

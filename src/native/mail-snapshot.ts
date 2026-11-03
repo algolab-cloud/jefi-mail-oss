@@ -80,7 +80,7 @@ function requestId() {
 }
 
 /** Takes a public WKWebView snapshot. A late callback is ignored after the bounded timeout. */
-export function snapshotMailWebView(webView: Pointer, timeoutMs = 1_000): Promise<string | null> {
+export function snapshotMailWebView(webView: Pointer | bigint, timeoutMs = 1_000): Promise<string | null> {
   const native = snapshotLibrary()
   const nativeCallback = callback
   if (!native || !nativeCallback || !Number.isFinite(timeoutMs) || timeoutMs <= 0) return Promise.resolve(null)

@@ -1,6 +1,5 @@
-import type { Pointer } from 'bun:ffi'
 import type { SignInBrowser, SignInPlatform, SignInUserAgent } from '../theme'
-import { alloc, available, cls, loadWebKit, makeObject, msg, msgBool, msgInitWindow, msgRectObj, nsString, release } from './objc'
+import { alloc, available, cls, loadWebKit, makeObject, msg, msgBool, msgInitWindow, msgRectObj, nsString, release, type Id } from './objc'
 
 // ---------------------------------------------------------------------------
 // The provider's sign-in page in a window of Jefi's own, instead of a tab in the default browser.
@@ -66,9 +65,9 @@ export function signInUserAgent(parts: Partial<SignInUserAgent> = {}, env: Recor
   return suffix ? `${base} ${suffix}` : base
 }
 
-let window: Pointer | null = null
-let view: Pointer | null = null
-let delegate: Pointer | null = null
+let window: Id = null
+let view: Id = null
+let delegate: Id = null
 let onClosed: (() => void) | null = null
 
 /** Opens (or reuses) the sign-in window on `url`; `closed` runs if the person closes it themselves. */

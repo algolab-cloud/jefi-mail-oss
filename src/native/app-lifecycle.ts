@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { CString, dlopen, FFIType, JSCallback, type Pointer } from 'bun:ffi'
-import { available, cls, msg, msgBool, msgIndex, msgInt, msgLong, sel } from './objc'
+import { available, cls, msg, msgBool, msgIndex, msgInt, msgLong, sel, type Id } from './objc'
 
 // ---------------------------------------------------------------------------
 // Keeping Jefi alive without its window. GPUIX exits the process when its last window closes, which
@@ -74,8 +74,8 @@ function jsBackend(): Backend {
     class_replaceMethod: { args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.cstring], returns: FFIType.ptr },
   }).symbols
   const app = () => msg(cls('NSApplication'), 'sharedApplication')
-  const className = (object: Pointer | null) => new CString(runtime.class_getName(runtime.object_getClass(object))!).toString()
-  let window: Pointer | null = null
+  const className = (object: Id) => new CString(runtime.class_getName(runtime.object_getClass(object))!).toString()
+  let window: Id = null
   let plan: ClosePlan = { action: 'quit', hideDock: false }
   const keep: JSCallback[] = []
   const visible = () => !!window && msgInt(window, 'isVisible') === 1

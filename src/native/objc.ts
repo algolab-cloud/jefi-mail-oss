@@ -11,7 +11,8 @@ import { CFunction, CString, dlopen, FFIType, JSCallback, ptr, read, type Pointe
 
 export const available = process.platform === 'darwin' && process.arch === 'arm64'
 
-type Id = Pointer | null
+/** An Objective-C object. Bun returns a tagged pointer (a small NSNumber or NSString) as a bigint. */
+export type Id = Pointer | bigint | null
 
 const lib = available
   ? {
@@ -46,10 +47,10 @@ export function loadWebKit() {
   loadedWebKit = true
 }
 
-const selectors = new Map<string, Pointer>()
-export const sel = (name: string) => {
+const selectors = new Map<string, Id>()
+export const sel = (name: string): Id => {
   let s = selectors.get(name)
-  if (!s) selectors.set(name, (s = lib!.objc.symbols.sel_registerName(cstr(name))!))
+  if (!s) selectors.set(name, (s = lib!.objc.symbols.sel_registerName(cstr(name))))
   return s
 }
 export const cls = (name: string) => lib!.objc.symbols.objc_getClass(cstr(name))

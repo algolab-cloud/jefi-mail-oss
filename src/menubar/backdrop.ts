@@ -1,5 +1,4 @@
-import type { Pointer } from 'bun:ffi'
-import { alloc, available, cls, msg, msgBool, msgGetValue, msgIndex, msgInitWindow, msgInt, msgLong, msgRectReturn, nsString } from '../native/objc'
+import { alloc, available, cls, msg, msgBool, msgGetValue, msgIndex, msgInitWindow, msgInt, msgLong, msgRectReturn, nsString, type Id } from '../native/objc'
 
 // ---------------------------------------------------------------------------
 // For scripts/shot-menubar.ts only (reached through the debug remote): a borderless window over each
@@ -18,21 +17,21 @@ const OVER_MENU_BAR = 25
 /** Saturated colours with near-white and near-black among them: the hardest case for text on glass. */
 const BUSY = ['#FF3B30', '#FFFFFF', '#0A84FF', '#FFD60A', '#111111', '#34C759', '#FF2D92', '#F2F2F2', '#5E5CE6', '#FF9F0A', '#000000', '#64D2FF']
 
-let windows: Pointer[] = []
+let windows: Id[] = []
 
 const colour = (hex: string) => {
   const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
   return msgRectReturn(cls('NSColor'), 'colorWithSRGBRed:green:blue:alpha:', r!, g!, b!, 1)
 }
 
-const frameOf = (object: Pointer | null) => {
+const frameOf = (object: Id) => {
   const value = object && msg(object, 'valueForKey:', nsString('frame'))
   const bytes = new Float64Array(4)
   if (value) msgGetValue(value, 'getValue:size:', new Uint8Array(bytes.buffer))
   return [...bytes]
 }
 
-function backdropView(kind: Exclude<Backdrop, 'none'>, w: number, h: number, image: Pointer | null) {
+function backdropView(kind: Exclude<Backdrop, 'none'>, w: number, h: number, image: Id) {
   const content = msgRectReturn(alloc('NSView'), 'initWithFrame:', 0, 0, w, h)!
   msgBool(content, 'setWantsLayer:', true)
   if (kind === 'image' && image) {
