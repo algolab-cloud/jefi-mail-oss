@@ -9,6 +9,10 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Read-only: these run on pull requests, including forks, and never see a secret.
+permissions:
+  contents: read
+
 jobs:
   app:
     name: App (typecheck + tests)
@@ -16,8 +20,8 @@ jobs:
     # the Keychain tests runs here at a twentieth of a Mac's cost. Those run in the release job.
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test ./src ./scripts

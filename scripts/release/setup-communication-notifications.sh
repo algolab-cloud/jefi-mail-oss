@@ -138,18 +138,23 @@ write_env() {
   printf '  %s✓ wrote%s %s → %s\n' "$GREEN" "$RESET" "$key" "$ENV_FILE"
 }
 
-# set_secret NAME VALUE sets a GitHub Actions repo secret via gh. Falls back
+# Release keys are secrets of the protected `release` environment of the public repo, never
+# repo-wide: only an approved run for a v* tag can read them (scripts/release/protect-repo.sh).
+RELEASE_REPO="${JEFI_RELEASE_REPO:-algolab-cloud/jefi-mail-oss}"
+RELEASE_ENV="${JEFI_RELEASE_ENV:-release}"
+
+# set_secret NAME VALUE sets a secret of the release environment via gh. Falls back
 # to a warning (and records it) if gh is unavailable or unauthenticated.
 set_secret() {
   local name="$1" value="$2"
   if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    if printf '%s' "$value" | gh secret set "$name" >/dev/null 2>&1; then
+    if printf '%s' "$value" | gh secret set "$name" --repo "$RELEASE_REPO" --env "$RELEASE_ENV" >/dev/null 2>&1; then
       WRITTEN_SECRET+=("$name")
-      printf '  %s✓ set%s GitHub secret %s\n' "$GREEN" "$RESET" "$name"
+      printf '  %s✓ set%s %s secret %s\n' "$GREEN" "$RESET" "$RELEASE_ENV" "$name"
       return
     fi
   fi
-  SKIPPED+=("GitHub secret $name (set it manually: gh secret set $name)")
+  SKIPPED+=("GitHub secret $name (set it manually: gh secret set $name --repo $RELEASE_REPO --env $RELEASE_ENV)")
   warn "skipped GitHub secret $name: gh not ready; set it later"
 }
 

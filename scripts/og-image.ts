@@ -100,7 +100,7 @@ const cards: Array<Card> = [
     accent: VIOLET_SOFT,
     lines: ['Quiet, private apps', 'for your Mac.'],
     sub: ['Jefi Mail keeps every inbox private. Jefi Shot', 'turns a screen recording into a polished demo.'],
-    pill: 'Mail is free · Shot is pay once',
+    pill: 'Mail is free · Shot is coming soon',
   },
   {
     out: 'og-mail.png',
@@ -122,7 +122,7 @@ const cards: Array<Card> = [
     accent: CORAL_SOFT,
     lines: ['Demo videos,', 'without the editing.'],
     sub: ['Record a window, get a polished take: zooms,', 'a smooth cursor, a clean frame. Nothing uploaded.'],
-    pill: 'Pay once · 14 days free',
+    pill: 'Coming soon',
   },
 ]
 

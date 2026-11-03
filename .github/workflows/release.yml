@@ -1,6 +1,12 @@
 name: Release app
 
 # Push a tag like v0.2.0 to build, sign, notarize and publish Jefi.dmg.
+#
+# The signing, notarization and upload keys are secrets of the protected `release` environment:
+# only v* tags may deploy to it, and each run waits for a maintainer's approval before any step can
+# read them (scripts/release/protect-repo.sh sets that up). Pull requests never run this workflow.
+# Every action is pinned to a commit, and the DMG gets a build attestation, so anyone can check
+# that a download was built here from a given commit: gh attestation verify Jefi-<v>.dmg -R <repo>
 # Artifacts land in the R2 bucket served at https://downloads.jefi.app:
 #   /releases/<version>/Jefi-<version>.dmg   immutable, one per release
 #   /Jefi.dmg                                always the latest (what the website links to)
@@ -8,28 +14,27 @@ name: Release app
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "Version to build (without the v), e.g. 0.2.0"
-        required: true
 
 permissions:
-  contents: write
+  contents: write # the GitHub release
+  id-token: write # signing the build attestation
+  attestations: write
 
 jobs:
   release:
-    runs-on: blacksmith-6vcpu-macos-15 # Apple silicon (M4): signing and notarization need a Mac
+    runs-on: macos-15 # Apple silicon, GitHub-hosted and fresh every run: signing and notarization need a Mac
     environment: release
     env:
       R2_BUCKET: jefi-downloads
       DOWNLOAD_BASE: https://downloads.jefi.app
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
       # Match the compiler used to validate Jefi's patched native renderer locally.
@@ -40,8 +45,7 @@ jobs:
       - name: Resolve version
         id: v
         run: |
-          VERSION="${{ github.event.inputs.version }}"
-          [ -z "$VERSION" ] && VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${GITHUB_REF_NAME#v}"
           PKG=$(jq -r .version package.json)
           if [ "$VERSION" != "$PKG" ]; then
             echo "::error::Tag v$VERSION does not match package.json version $PKG"; exit 1
@@ -75,6 +79,8 @@ jobs:
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security import "$RUNNER_TEMP/cert.p12" -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          # One argument per existing keychain: the split is the point.
+          # shellcheck disable=SC2046
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
           rm "$RUNNER_TEMP/cert.p12"
 
@@ -105,6 +111,11 @@ jobs:
           bun scripts/release/sign.ts --notarize-only
           echo "DMG=dist/Jefi-${{ steps.v.outputs.version }}.dmg" >> "$GITHUB_ENV"
 
+      - name: Attest the build
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ env.DMG }}
+
       - name: Write latest.json
         run: |
           VERSION="${{ steps.v.outputs.version }}"
@@ -120,13 +131,13 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           VERSION="${{ steps.v.outputs.version }}"
-          put() { bunx wrangler@4 r2 object put "$R2_BUCKET/$1" --file "$2" --content-type "$3" --cache-control "$4" --remote; }
+          put() { bunx wrangler@4.156.2 r2 object put "$R2_BUCKET/$1" --file "$2" --content-type "$3" --cache-control "$4" --remote; }
           put "releases/$VERSION/Jefi-$VERSION.dmg" "$DMG" application/x-apple-diskimage "public, max-age=31536000, immutable"
           put "Jefi.dmg"    "$DMG"             application/x-apple-diskimage "public, max-age=300"
           put "latest.json" dist/latest.json   application/json             "public, max-age=60"
 
       - name: GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: v${{ steps.v.outputs.version }}
           generate_release_notes: true

@@ -59,6 +59,18 @@ either `JEFI_NOTARY_PROFILE` or `APPLE_ID`, `APPLE_TEAM_ID` and `APPLE_APP_SPECI
 Builds you make yourself never look for updates. The updater only runs in official releases, so a
 release can never replace your build.
 
+### Official releases
+
+Releases are built by `.github/workflows/release.yml` from a `v*` tag, on a fresh GitHub-hosted Mac.
+The signing and notarization keys live in a protected `release` environment: only a maintainer can
+create release tags, and every run waits for their approval before it can read a key
+(`scripts/release/protect-repo.sh` sets this up). Each DMG gets a build attestation, so you can
+check that a download was built here, from a public commit:
+
+```bash
+gh attestation verify Jefi-0.9.0.dmg -R algolab-cloud/jefi-mail-oss
+```
+
 ## Project layout
 
 | Path | What's there |
