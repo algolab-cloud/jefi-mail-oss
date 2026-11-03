@@ -23,13 +23,13 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.127.0",
-    "@gpuix/react": "latest",
+    "@gpuix/react": "0.8.0",
     "chrono-node": "2.10.1",
     "domhandler": "5.0.3",
     "htmlparser2": "10.1.0",
     "imapflow": "^2.0.5",
-    "mailparser": "^3.9.28",
-    "nodemailer": "^10.0.10",
+    "mailparser": "^3.14.1",
+    "nodemailer": "^10.3.1",
     "openai": "^7.19.0",
     "react": "^19.2.4",
     "tldts": "^7.4.13"
@@ -42,8 +42,14 @@
     "@types/react": "^19.2.14",
     "@types/smtp-server": "^3.5.13",
     "hoodiecrow-imap": "^2.1.0",
-    "smtp-server": "^3.19.13",
+    "smtp-server": "^3.21.3",
     "typescript": "~5.9.3"
+  },
+  "overrides": {
+    "ip-address": "^10.7.5",
+    "minimist": "^0.2.4",
+    "nodemailer": "^10.3.1",
+    "zod": "^4.6.7"
   },
   "patchedDependencies": {
     "@gpuix/native@0.8.0": "patches/@gpuix%2Fnative@0.8.0.patch",

@@ -4,6 +4,8 @@ Thanks for helping. Bug reports, fixes and features are all welcome.
 
 ## Before you start
 
+- Found a security problem? Don't open an issue; report it privately as [SECURITY.md](SECURITY.md)
+  describes.
 - For anything bigger than a small fix, open an issue first so we can agree on the approach.
 - Never include real mail, addresses, passwords or API keys in issues, tests or screenshots. Tests
   use made-up `example.com` addresses and the fake servers and seeded mailboxes in `src/engine/testing/`.

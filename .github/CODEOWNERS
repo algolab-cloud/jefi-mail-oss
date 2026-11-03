@@ -1,0 +1,15 @@
+# Every change needs the maintainer's review. The paths below matter most: they decide what goes
+# into a signed build, what can read the release keys, and what touches people's secrets.
+*                         @ericmaro
+
+/.github/                 @ericmaro
+/scripts/release/         @ericmaro
+/scripts/bundle.ts        @ericmaro
+/scripts/native/          @ericmaro
+/patches/                 @ericmaro
+/package.json             @ericmaro
+/bun.lock                 @ericmaro
+/src/updater.ts           @ericmaro
+/src/keychain.ts          @ericmaro
+/src/native/              @ericmaro
+/src/engine/oauth.ts      @ericmaro

@@ -86,7 +86,8 @@ gh attestation verify Jefi-0.9.0.dmg -R algolab-cloud/jefi-mail-oss
 
 ## Contributing
 
-Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). Security problems:
+please report them privately, as [SECURITY.md](SECURITY.md) describes.
 
 ## Licence
 

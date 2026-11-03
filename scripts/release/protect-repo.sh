@@ -12,8 +12,10 @@
 # 3. main: no force pushes or deletion; changes from anyone but admins go through a pull request.
 # 4. Actions: workflows get a read-only token by default, and pull requests from outside
 #    contributors wait for approval before they run.
+# 5. Security features: private vulnerability reporting (SECURITY.md), Dependabot alerts and
+#    security updates, and secret scanning that blocks a push containing a key.
 #
-# Undo any of it under Settings → Environments, Settings → Rules, and Settings → Actions.
+# Undo any of it under Settings → Environments, Rules, Actions, and Advanced Security.
 
 set -euo pipefail
 
@@ -65,7 +67,8 @@ ruleset "Release tags" <<JSON
 }
 JSON
 
-# 3. main: reviewed pull requests, no history rewrites. Admins may still push (bun run release does).
+# 3. main: reviewed pull requests (by the code owner, .github/CODEOWNERS) that pass the tests and the
+#    dependency review; no history rewrites. Admins may still push (bun run release does).
 ruleset "Protect main" <<JSON
 {
   "name": "Protect main",
@@ -78,9 +81,13 @@ ruleset "Protect main" <<JSON
     { "type": "pull_request", "parameters": {
       "required_approving_review_count": 1,
       "dismiss_stale_reviews_on_push": true,
-      "require_code_owner_review": false,
+      "require_code_owner_review": true,
       "require_last_push_approval": true,
       "required_review_thread_resolution": false
+    } },
+    { "type": "required_status_checks", "parameters": {
+      "strict_required_status_checks_policy": false,
+      "required_status_checks": [{ "context": "App (typecheck + tests)" }, { "context": "review" }]
     } }
   ],
   "bypass_actors": [{ "actor_id": $ADMIN_ROLE, "actor_type": "RepositoryRole", "bypass_mode": "always" }]
@@ -91,6 +98,20 @@ JSON
 gh api -X PUT "repos/$REPO/actions/permissions/workflow" -f default_workflow_permissions=read -F can_approve_pull_request_reviews=false >/dev/null
 gh api -X PUT "repos/$REPO/actions/permissions/fork-pr-contributor-approval" -f approval_policy=all_external_contributors >/dev/null
 echo "  ✓ actions: read-only token by default; outside contributors' pull requests wait for approval"
+
+# 5. Security features (free on public repositories).
+gh api -X PUT "repos/$REPO/private-vulnerability-reporting" >/dev/null
+gh api -X PUT "repos/$REPO/vulnerability-alerts" >/dev/null
+gh api -X PUT "repos/$REPO/automated-security-fixes" >/dev/null
+gh api -X PATCH "repos/$REPO" --input - >/dev/null <<JSON
+{
+  "security_and_analysis": {
+    "secret_scanning": { "status": "enabled" },
+    "secret_scanning_push_protection": { "status": "enabled" }
+  }
+}
+JSON
+echo "  ✓ security: private reporting, Dependabot alerts and fixes, secret scanning with push protection"
 
 cat <<DONE
 

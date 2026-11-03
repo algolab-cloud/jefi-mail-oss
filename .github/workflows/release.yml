@@ -53,6 +53,8 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - run: bun install --frozen-lockfile
+      - name: Known vulnerabilities
+        run: bun audit --audit-level=high
       - run: bun run typecheck
       - run: bun run test
       - run: bun run bundle

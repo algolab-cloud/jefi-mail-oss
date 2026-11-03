@@ -1,0 +1,33 @@
+# Security updates open on their own as soon as an advisory lands (they're switched on in the repo's
+# settings by scripts/release/protect-repo.sh). These are the routine updates on top.
+version: 2
+updates:
+  # The workflows pin every action to a commit; this keeps those pins current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # The app. One pull request a week for the minor and patch updates; majors one at a time.
+  - package-ecosystem: bun
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # Patched in patches/ against this exact version: moving it means redoing the patch.
+      - dependency-name: "@gpuix/*"
+
+  - package-ecosystem: npm
+    directory: /integrations/raycast
+    schedule:
+      interval: monthly
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
