@@ -3,6 +3,8 @@
 A fast, native mail app for macOS, with calendar, notes and tasks beside your inbox. Free and open
 source under the GPL.
 
+![Jefi Mail: the inbox with a conversation open](docs/screenshots/mail.png)
+
 Jefi is written in TypeScript and React, and draws its UI with [GPUIX](https://github.com/remorses/gpuix)
 (React on Zed's GPU-accelerated GPUI) on [Bun](https://bun.sh). Mail is synced over IMAP and sent over
 SMTP straight from your Mac. No Jefi server ever sees it.
@@ -16,6 +18,8 @@ SMTP straight from your Mac. No Jefi server ever sees it.
   key.
 - **Secrets**: account passwords and API keys sit in one encrypted vault. Its key is the only thing
   kept in the macOS Keychain, so you get one Keychain prompt, not one per account.
+
+![The calendar's week view, beside the mail](docs/screenshots/calendar.png)
 
 Download the signed, notarized app at [jefi.app](https://jefi.app), or build it yourself.
 

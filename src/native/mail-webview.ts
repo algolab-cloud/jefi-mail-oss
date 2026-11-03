@@ -213,6 +213,7 @@ function setClipperHidden(hidden: boolean) {
 /** Applies mailViewHidden to the current state; every path that changes it ends here. */
 function syncMailVisibility() {
   if (!clipper) return
+  if (stillMail) freezeForScreenshot()
   const covered = overlaysOpen() && !linkReviewBesideWeb
   // A page that loaded (or was placed, or re-laid out) while an overlay was already open never got
   // the on-screen capture. Try once per page while hidden, so the stand-in image can still appear.
@@ -227,6 +228,23 @@ function syncMailVisibility() {
     linkReviewBesideWeb,
     capturingOnScreen: visibleCaptureGeneration === snapshotGeneration,
   }))
+}
+
+/**
+ * Screenshots only (JEFI_STILL_MAIL=1): GPUIX's own window captures can't see WebKit, which is a native
+ * view on top, so the page is frozen into the GPUI tree as soon as it's placed and loaded.
+ */
+const stillMail = process.env.JEFI_STILL_MAIL === '1'
+let stillTried = -1
+function freezeForScreenshot() {
+  const web = view
+  const page = shown
+  const generation = snapshotGeneration
+  if (!web || !placed || !page || loadedShown !== page || currentMailSnapshot() || stillTried === generation) return
+  stillTried = generation
+  void snapshotMailWebView(web).then((snapshot) => {
+    if (snapshot && generation === snapshotGeneration && page === shown) setFrozenSnapshot(snapshot, page)
+  })
 }
 
 /**

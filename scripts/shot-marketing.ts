@@ -13,7 +13,7 @@
  * and a message and an invitation have arrived while it runs. That launch puts a real, temporary item
  * on this Mac's menu bar.
  *
- *   bun scripts/shot-marketing.ts [prefix] [--menubar-only] [--theme=dark|light] [--accent=violet] [--glass]
+ *   bun scripts/shot-marketing.ts [prefix] [--menubar-only] [--no-menubar] [--theme=dark|light] [--accent=violet] [--glass]
  *
  * --glass takes the window shots in Liquid Glass: GPUIX's own screenshots flatten the window onto black,
  * so the app runs in front over a wallpaper window (scripts/native/wallpaper-window.swift) and each shot
@@ -37,6 +37,8 @@ import type { EventInput } from '../src/engine'
 const args = process.argv.slice(2)
 // --menubar-only skips the window shots (the mailbox is still synced and seeded first).
 const menubarOnly = args.includes('--menubar-only')
+// --no-menubar stops after the window shots, leaving this Mac's menu bar alone.
+const noMenubar = args.includes('--no-menubar')
 const glass = args.includes('--glass')
 const out = args.find((a) => !a.startsWith('--')) ?? `${process.cwd()}/tmp/marketing`
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -343,7 +345,8 @@ for (const [theme, themeAccent] of ([['light', 'blue'], ['dark', 'violet']] as c
       command: 'sh',
       args: ['-c', `exec bun src/mail.tsx 2>>'${out}-app.log'`],
       // Glass shots come off the screen, so the window has to be up front rather than in the background.
-      env: { ...(glass ? {} : { GPUIX_BACKGROUND: '1' }), JEFI_SKIP_ONBOARDING: '1', JEFI_WINDOW: '1200x750', JEFI_DEMO_FACES: `${process.cwd()}/scripts/testing/faces`, ...fixture.env },
+      // Off screen, WebKit can't be captured: freeze each message into the picture (JEFI_STILL_MAIL).
+      env: { ...(glass ? {} : { GPUIX_BACKGROUND: '1', JEFI_STILL_MAIL: '1' }), JEFI_SKIP_ONBOARDING: '1', JEFI_WINDOW: '1200x750', JEFI_DEMO_FACES: `${process.cwd()}/scripts/testing/faces`, ...fixture.env },
       cwd: process.cwd(),
     })
   const helpers = (app: App) => {
@@ -451,7 +454,7 @@ for (const [theme, themeAccent] of ([['light', 'blue'], ['dark', 'violet']] as c
         wallpaper?.kill()
       }
       // The menu bar scene isn't a glass shot; a glass run stops after the window shots.
-      if (glass) continue
+      if (glass || noMenubar) continue
     }
 
     // The menu bar panel, on a third launch with the item on and a meeting coming up.
