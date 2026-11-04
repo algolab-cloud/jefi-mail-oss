@@ -22,7 +22,9 @@ permissions:
 
 jobs:
   release:
-    runs-on: macos-15 # Apple silicon, GitHub-hosted and fresh every run: signing and notarization need a Mac
+    # Apple silicon, fresh every run: signing and notarization need a Mac. Blacksmith, because GitHub's
+    # macos-15 image of 2026-10-28 broke the GPUIX composer tests and its arm64 runners were short.
+    runs-on: blacksmith-6vcpu-macos-15
     environment: release
     env:
       R2_BUCKET: jefi-downloads
