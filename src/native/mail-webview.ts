@@ -545,15 +545,18 @@ export function openExternalLink(raw: string) {
   }
 }
 
-/** Copy without visiting or otherwise resolving the destination. */
-export function copyLink(raw: string) {
+/** Puts plain text on the clipboard. */
+export function copyText(text: string) {
   if (!available) return false
   const pasteboard = msg(cls('NSPasteboard'), 'generalPasteboard')
   if (!pasteboard) return false
   msg(pasteboard, 'clearContents')
-  msg(pasteboard, 'setString:forType:', nsString(raw), nsString('public.utf8-plain-text'))
+  msg(pasteboard, 'setString:forType:', nsString(text), nsString('public.utf8-plain-text'))
   return true
 }
+
+/** Copy without visiting or otherwise resolving the destination. */
+export const copyLink = (raw: string) => copyText(raw)
 
 /**
  * Where the message page may load images from. Images that travelled with the mail (data:, cid:)

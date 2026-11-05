@@ -44,6 +44,8 @@ import { Onboarding } from './onboarding'
 import { JefiMark } from './brand'
 import { Button } from './ui'
 import { AssistantPanel } from './assistant-panel'
+import { onHandoff } from './assistant-handoff'
+import { copySelectionOnKey } from './copy-selection'
 import { PaneResizer } from './resizer'
 import { resolveNotificationThread } from './notification-routing'
 import { useStableCallback } from './stable-callback'
@@ -197,6 +199,8 @@ function Workspace({ onAddAccount, wizardOpen }: { onAddAccount: () => void; wiz
   const [compose, setCompose] = useState<ComposeState | null>(null)
   const [forwarding, setForwarding] = useState(false)
   const [assistantOpen, setAssistantOpen] = useState(false)
+  // A summary sent to the chat opens the assistant, where it waits for the person's question.
+  useEffect(() => onHandoff(() => setAssistantOpen(true)), [])
   // New versions arrive in the background. The context column says so with a card (sidebar.tsx);
   // with no column showing (hidden, or in Notes), a toast says it once instead.
   const updates = useUpdater()
@@ -1066,6 +1070,7 @@ if (isEntryPoint) {
         else renderer.focusNext?.()
         return
       }
+      if (copySelectionOnKey(event, renderer)) return
       dispatchKey(event, { typing: renderer.getFocusedElementId?.() != null })
     },
     title: APP_NAME,
