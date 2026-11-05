@@ -107,3 +107,70 @@ export function snapshotMailWebView(webView: Pointer | bigint, timeoutMs = 1_000
     }
   })
 }
+
+// Content height (see jefi_mail_content_height in scripts/native/mail-snapshot.m). Opened on its own,
+// so a helper built before this existed still gives snapshots.
+const openHeightLibrary = (path: string) =>
+  dlopen(path, {
+    jefi_mail_content_height: {
+      args: [FFIType.ptr, FFIType.u32, FFIType.ptr],
+      returns: FFIType.void,
+    },
+  })
+
+let heightLibrary: ReturnType<typeof openHeightLibrary> | null | undefined
+let heightCallback: JSCallback | null = null
+const pendingHeights = new Map<number, (height: number | null) => void>()
+
+function contentHeightLibrary() {
+  if (heightLibrary !== undefined) return heightLibrary
+  if (!mailSnapshotAvailable) return (heightLibrary = null)
+  const path = mailSnapshotHelperPath()
+  if (!existsSync(path)) return (heightLibrary = null)
+  try {
+    const opened = openHeightLibrary(path)
+    heightCallback = new JSCallback(
+      (id: number, height: number) => {
+        const finish = pendingHeights.get(id)
+        if (!finish) return
+        pendingHeights.delete(id)
+        finish(contentHeight(height))
+      },
+      { args: [FFIType.u32, FFIType.f64], returns: FFIType.void },
+    )
+    heightLibrary = opened
+    return opened
+  } catch {
+    heightCallback?.close()
+    heightCallback = null
+    return (heightLibrary = null)
+  }
+}
+
+/** A measured height worth using: positive, finite, and not absurd. */
+export const contentHeight = (height: number) => (Number.isFinite(height) && height > 0 && height < 1_000_000 ? Math.ceil(height) : null)
+
+/** How tall the loaded message is at the web view's current width, or null if it can't be told. */
+export function measureMailContentHeight(webView: Pointer | bigint, timeoutMs = 1_000): Promise<number | null> {
+  const native = contentHeightLibrary()
+  const nativeCallback = heightCallback
+  if (!native || !nativeCallback) return Promise.resolve(null)
+  const id = requestId()
+  return new Promise((finish) => {
+    const timeout = setTimeout(() => {
+      pendingHeights.delete(id)
+      finish(null)
+    }, timeoutMs)
+    pendingHeights.set(id, (height) => {
+      clearTimeout(timeout)
+      finish(height)
+    })
+    try {
+      native.symbols.jefi_mail_content_height(webView, id, nativeCallback.ptr)
+    } catch {
+      pendingHeights.delete(id)
+      clearTimeout(timeout)
+      finish(null)
+    }
+  })
+}

@@ -106,3 +106,68 @@ __attribute__((visibility("default"))) void jefi_mail_snapshot(
   if ([NSThread isMainThread]) capture();
   else dispatch_async(dispatch_get_main_queue(), capture);
 }
+
+// ---------------------------------------------------------------------------
+// Content height: how tall the message is at the view's current width, so the reader can size the
+// view to fit it instead of scrolling it inside a fixed box. Page JavaScript stays off: this one
+// script is the app's, run in WebKit's client world, where the page's own code can't reach it.
+// ---------------------------------------------------------------------------
+
+typedef void (*JefiMailHeightCallback)(uint32_t request_id, double height);
+
+// Overflowing: the document's scroll height is the content's, and the page keeps its own scrolling
+// until the view is resized to fit. Fitting: the scroll height is at least the viewport, so measure
+// what the body holds (text included) to let the view shrink, and stop the page scrolling (and
+// bouncing) vertically, so the wheel scrolls the conversation around it instead.
+static NSString *const JefiMailHeightScript =
+    @"(() => {"
+     "const d = document.documentElement, b = document.body;"
+     "if (!d || !b) return 0;"
+     "if (d.scrollHeight > innerHeight + 1) { d.style.removeProperty('overflow-y'); return d.scrollHeight; }"
+     "d.style.setProperty('overflow-y', 'hidden', 'important');"
+     "const range = document.createRange(); range.selectNodeContents(b);"
+     "const style = getComputedStyle(b);"
+     "const bottom = range.getBoundingClientRect().bottom + scrollY;"
+     "return Math.ceil(bottom + parseFloat(style.paddingBottom || '0') + parseFloat(style.marginBottom || '0'));"
+     "})()";
+
+static void jefi_mail_content_height_on_main(
+    WKWebView *web_view,
+    uint32_t request_id,
+    JefiMailHeightCallback callback) {
+  NSCAssert([NSThread isMainThread], @"WKWebView scripts must start on the main thread");
+  if (![web_view isKindOfClass:[WKWebView class]]) {
+    callback(request_id, -1);
+    return;
+  }
+  WKWebView *captured_web_view = web_view;
+  [captured_web_view evaluateJavaScript:JefiMailHeightScript
+                                inFrame:nil
+                         inContentWorld:WKContentWorld.defaultClientWorld
+                      completionHandler:^(id _Nullable result, NSError *_Nullable error) {
+    void (^finish)(void) = ^{
+      __attribute__((objc_precise_lifetime)) WKWebView *retained_web_view = captured_web_view;
+      (void)retained_web_view;
+      double height = error == nil && [result isKindOfClass:[NSNumber class]] ? [(NSNumber *)result doubleValue] : -1;
+      callback(request_id, isfinite(height) ? height : -1);
+    };
+    if ([NSThread isMainThread]) finish();
+    else dispatch_async(dispatch_get_main_queue(), finish);
+  }];
+}
+
+__attribute__((visibility("default"))) void jefi_mail_content_height(
+    void *web_view,
+    uint32_t request_id,
+    JefiMailHeightCallback callback) {
+  if (!callback) return;
+  if (!web_view) {
+    if ([NSThread isMainThread]) callback(request_id, -1);
+    else dispatch_async(dispatch_get_main_queue(), ^{ callback(request_id, -1); });
+    return;
+  }
+  WKWebView *view = (__bridge WKWebView *)web_view;
+  void (^measure)(void) = ^{ jefi_mail_content_height_on_main(view, request_id, callback); };
+  if ([NSThread isMainThread]) measure();
+  else dispatch_async(dispatch_get_main_queue(), measure);
+}
