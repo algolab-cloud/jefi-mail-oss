@@ -174,3 +174,34 @@ export function measureMailContentHeight(webView: Pointer | bigint, timeoutMs = 
     }
   })
 }
+
+// Scroll forwarding (see JefiMailWebView in scripts/native/mail-snapshot.m), opened on its own too.
+const openForwardLibrary = (path: string) =>
+  dlopen(path, { jefi_mail_forward_scroll: { args: [FFIType.ptr, FFIType.bool], returns: FFIType.void } })
+let forwardLibrary: ReturnType<typeof openForwardLibrary> | null | undefined
+
+function scrollForwardingLibrary() {
+  if (forwardLibrary !== undefined) return forwardLibrary
+  const path = mailSnapshotAvailable ? mailSnapshotHelperPath() : null
+  try {
+    return (forwardLibrary = path && existsSync(path) ? openForwardLibrary(path) : null)
+  } catch {
+    return (forwardLibrary = null)
+  }
+}
+
+/**
+ * The web view class to make: the helper's JefiMailWebView, which can hand scrolling to the reader,
+ * once the helper is loaded; plain WKWebView without it.
+ */
+export const mailWebViewClass = () => (scrollForwardingLibrary() ? 'JefiMailWebView' : 'WKWebView')
+
+/** Sends vertical scrolling over the web view to the conversation around it (`forward`), or leaves it to the page. */
+export function forwardMailScroll(webView: Pointer | bigint | null, forward: boolean) {
+  if (!webView) return
+  try {
+    scrollForwardingLibrary()?.symbols.jefi_mail_forward_scroll(webView, forward)
+  } catch {
+    // The page then keeps the wheel, as before.
+  }
+}

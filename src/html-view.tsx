@@ -1,7 +1,7 @@
 import { appendFileSync } from 'node:fs'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useSyncExternalStore, type RefObject } from 'react'
 import { useGpuix, useWindowSize, type PublicInstance } from '@gpuix/react'
-import { MAIL_CORNER_RADIUS, destroyMail, fullRenderingAvailable, hideMail, mailBackground, mailContentHeight, mailSnapshot, mailSnapshotRevision, place, setMailSnapshotImageReleaser, showMail, subscribeMailSnapshots, type MailTheme } from './native/mail-webview'
+import { MAIL_CORNER_RADIUS, MIN_PAGE_HEIGHT, destroyMail, fullRenderingAvailable, hideMail, mailBackground, mailContentHeight, mailSnapshot, mailSnapshotRevision, maxPageHeight, place, setMailSnapshotImageReleaser, showMail, subscribeMailSnapshots, type MailTheme } from './native/mail-webview'
 import type { LinkPosition } from './link-popover'
 import { htmlLinks } from './link-accessibility'
 import { LinkDestinationList, type LinkDisclosureContext } from './markdown'
@@ -125,10 +125,7 @@ function useNativeMailView(html: string, allowRemoteImages: boolean, theme: Mail
   useEffect(() => () => destroyMail(), [])
 }
 
-/** Shortest the page is drawn, so a one-line message still reads as a page. */
-const MIN_PAGE_HEIGHT = 48
-/** Tallest: what a frozen snapshot can still cover (see snapshotBoundsAllowed). Past it, the page scrolls inside. */
-export const maxPageHeight = (width: number) => Math.max(MIN_PAGE_HEIGHT, Math.min(8000, Math.floor(4_000_000 / Math.max(width, 1))))
+export { maxPageHeight }
 
 /**
  * The page's height: as tall as the message once WebKit has measured it, so the whole message scrolls

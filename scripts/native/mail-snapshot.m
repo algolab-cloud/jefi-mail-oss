@@ -171,3 +171,45 @@ __attribute__((visibility("default"))) void jefi_mail_content_height(
   if ([NSThread isMainThread]) measure();
   else dispatch_async(dispatch_get_main_queue(), measure);
 }
+
+// ---------------------------------------------------------------------------
+// Scroll forwarding. A message sized to fit has nothing to scroll, but WebKit still takes the wheel
+// over it, so the conversation around it couldn't be scrolled. The app's web view is this subclass:
+// while forwarding is on, vertical scrolling goes to the window's own view (GPUIX, two levels up:
+// web view, clipping view, window view), which scrolls the reader under the pointer. Horizontal
+// scrolling stays with the page (wide newsletters), and forwarding is off for a page too long to fit,
+// which scrolls itself. AppKit sends scrolling to the view under the pointer, which is this one.
+// ---------------------------------------------------------------------------
+
+@interface JefiMailWebView : WKWebView
+@property(nonatomic) BOOL jefiForwardsScroll;
+@end
+
+@implementation JefiMailWebView {
+  /** Decided as each gesture starts, so one gesture doesn't split between the page and the reader. */
+  BOOL _gestureForwarded;
+}
+
+- (void)scrollWheel:(NSEvent *)event {
+  BOOL starts = event.phase == NSEventPhaseBegan || event.phase == NSEventPhaseMayBegin ||
+      (event.phase == NSEventPhaseNone && event.momentumPhase == NSEventPhaseNone);
+  if (starts) _gestureForwarded = self.jefiForwardsScroll && fabs(event.scrollingDeltaX) <= fabs(event.scrollingDeltaY);
+  NSView *target = self.superview.superview;
+  if (_gestureForwarded && self.jefiForwardsScroll && target) {
+    [target scrollWheel:event];
+    return;
+  }
+  [super scrollWheel:event];
+}
+@end
+
+/** Turns forwarding on or off for the app's web view (made as a JefiMailWebView). */
+__attribute__((visibility("default"))) void jefi_mail_forward_scroll(void *web_view, bool enabled) {
+  if (!web_view) return;
+  id view = (__bridge id)web_view;
+  void (^apply)(void) = ^{
+    if ([view isKindOfClass:[JefiMailWebView class]]) ((JefiMailWebView *)view).jefiForwardsScroll = enabled;
+  };
+  if ([NSThread isMainThread]) apply();
+  else dispatch_async(dispatch_get_main_queue(), apply);
+}

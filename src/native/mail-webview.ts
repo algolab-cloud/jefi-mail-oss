@@ -1,6 +1,6 @@
 import { appendFileSync } from 'node:fs'
 import { onOverlaysChange, overlaysOpen } from '../overlays'
-import { measureMailContentHeight, snapshotMailWebView } from './mail-snapshot'
+import { forwardMailScroll, mailWebViewClass, measureMailContentHeight, snapshotMailWebView } from './mail-snapshot'
 import { alloc, available, callBlockWithInt, cls, fromNSString, loadWebKit, makeObject, msg, msgBool, msgBoolResult, msgGetValue, msgIndex, msgInt, msgRect, msgRectObj, nsString, release, msgDouble, type Id } from './objc'
 
 // ---------------------------------------------------------------------------
@@ -323,7 +323,8 @@ function ensureView(): Id {
   msgBool(msg(config, 'defaultWebpagePreferences'), 'setAllowsContentJavaScript:', false)
   // Mail shouldn't leave cookies or caches behind.
   msg(config, 'setWebsiteDataStore:', msg(cls('WKWebsiteDataStore'), 'nonPersistentDataStore'))
-  view = msgRectObj(alloc('WKWebView'), 'initWithFrame:configuration:', 0, 0, 10, 10, config)
+  // The helper's subclass when it's there, so scrolling over a fitted message scrolls the reader.
+  view = msgRectObj(alloc(cls(mailWebViewClass()) ? mailWebViewClass() : 'WKWebView'), 'initWithFrame:configuration:', 0, 0, 10, 10, config)
   release(config)
   // The page is a card with rounded corners, like the placeholder drawn beneath it (html-view.tsx).
   msgBool(view, 'setWantsLayer:', true)
@@ -388,6 +389,8 @@ export function showMail(html: string, allowRemoteImages = false, handleLink?: (
   if (!web) return false
   const page = mailPage(html, allowRemoteImages, theme)
   if (page !== shown) {
+    // The page keeps the wheel until the new message is measured and known to fit.
+    forwardMailScroll(web, false)
     snapshotGeneration++
     discardFrozenSnapshot()
     loadedShown = ''
@@ -440,6 +443,14 @@ const currentMailSnapshot = () => snapshotShown === shown && loadedShown === sho
 export const mailSnapshot = (html: string, allowRemoteImages = false, theme?: MailTheme) =>
   snapshotShown === mailPage(html, allowRemoteImages, theme) ? currentMailSnapshot() : null
 
+/** Shortest the page is drawn, so a one-line message still reads as a page. */
+export const MIN_PAGE_HEIGHT = 48
+/** Tallest: what a frozen snapshot can still cover (see snapshotBoundsAllowed). Past it, the page scrolls inside. */
+export const maxPageHeight = (width: number) => Math.max(MIN_PAGE_HEIGHT, Math.min(8000, Math.floor(4_000_000 / Math.max(width, 1))))
+
+/** Whether a page this tall is drawn whole at this width, so the wheel over it should scroll the conversation. */
+export const pageFits = (height: number, width: number) => height <= maxPageHeight(width)
+
 /** How tall these exact message bytes are, once loaded and measured; null until then. */
 export const mailContentHeight = (html: string, allowRemoteImages = false, theme?: MailTheme) =>
   measured && measured.page === mailPage(html, allowRemoteImages, theme) ? measured.height : null
@@ -451,6 +462,7 @@ function measureContent() {
   if (!web || !page || loadedShown !== page || !width) return
   void measureMailContentHeight(web).then((height) => {
     if (height === null || view !== web || shown !== page) return
+    forwardMailScroll(web, pageFits(height, width))
     if (measured?.page === page && measured.height === height) {
       measured.width = width
       return
