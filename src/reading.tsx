@@ -685,7 +685,6 @@ function MessageBlockView({
             allowRemoteImages={allowImages}
             theme={mailTheme}
             onLink={reviewLink}
-            linkDisclosure={find ? undefined : { sender: message.email, trustedDomains: settings.trustedLinkDomains }}
           />
         </div>
       ) : part.kind === 'markdown' ? (

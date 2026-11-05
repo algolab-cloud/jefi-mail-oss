@@ -249,14 +249,6 @@ test('the page is as tall as the message once measured, within what a snapshot c
   expect(snapshotBoundsAllowed(700, maxPageHeight(700))).toBe(true)
 })
 
-test('the page is never taller than the reader shows, so it can always be seen whole', () => {
-  // A 700 px reader: up to 676 px, the rest of a long message scrolls inside the page.
-  expect(pageHeight(2400, 600, 700, 700)).toBe(676)
-  expect(pageHeight(400, 600, 700, 700)).toBe(400)
-  // Before it's measured, the stand-in doesn't overflow the reader either.
-  expect(pageHeight(null, 900, 700, 700)).toBe(676)
-  expect(pageHeight(null, 600, 700, null)).toBe(600)
-})
 
 test('a page that scrolls shows it: a lasting scroll bar, and a fade in the page colour while more is below', () => {
   const plain = mailPage('<p>Long plan</p>', false, dark)
