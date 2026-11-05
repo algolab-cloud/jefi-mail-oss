@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useGpuix, type PublicInstance } from '@gpuix/react'
 import { FONT, useSettings } from './theme'
 
 // ---------------------------------------------------------------------------
@@ -7,6 +8,16 @@ import { FONT, useSettings } from './theme'
 // ---------------------------------------------------------------------------
 
 type Side = 'top' | 'bottom' | 'left' | 'right'
+
+/** Height a tooltip needs above its target (two lines plus the gap); with less, it opens below. */
+const ROOM_ABOVE = 48
+
+/**
+ * Where the tooltip opens: below instead of above a target near the window's top edge (the reader's
+ * toolbar). Left to GPUIX, it was pushed into the window on top of its own target, took the pointer
+ * from it, closed, and opened again: a flicker for as long as the pointer stayed.
+ */
+export const tooltipSide = (side: Side, targetTop: number | null) => (side === 'top' && targetTop !== null && targetTop < ROOM_ABOVE ? 'bottom' : side)
 
 export function Tooltip({
   label,
@@ -39,7 +50,10 @@ export function Tooltip({
   hovered?: boolean
 }) {
   const { C } = useSettings()
+  const renderer = useGpuix().renderer
+  const ref = useRef<PublicInstance>(null)
   const [open, setOpen] = useState(false)
+  const [shownSide, setShownSide] = useState<Side>(side)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const clear = () => {
     if (timer.current) clearTimeout(timer.current)
@@ -53,6 +67,8 @@ export function Tooltip({
   }, [hovered])
   const enter = () => {
     clear()
+    const bounds = ref.current ? renderer?.getElementBounds?.(ref.current.id) : null
+    setShownSide(tooltipSide(side, bounds ? bounds.y : null))
     if (delay <= 0) setOpen(true)
     else timer.current = setTimeout(() => setOpen(true), delay)
   }
@@ -62,6 +78,7 @@ export function Tooltip({
   }
   return (
     <div
+      ref={ref}
       onMouseEnter={hovered === undefined ? enter : undefined}
       onMouseLeave={hovered === undefined ? leave : undefined}
       onMouseDown={leave}
@@ -69,7 +86,8 @@ export function Tooltip({
     >
       {children}
       {open && label ? (
-        <anchored side={side} align="center" gap={6} fit="snap" deferred priority={3} style={{ backgroundColor: C.raised, borderRadius: 8 }}>
+        // Never a hit target itself, so even a tooltip pushed over its target can't take the pointer from it.
+        <anchored side={shownSide} align="center" gap={6} fit="snap" deferred priority={3} style={{ backgroundColor: C.raised, borderRadius: 8, pointerEvents: 'none' }}>
           <div
             testId={testId}
             style={{
