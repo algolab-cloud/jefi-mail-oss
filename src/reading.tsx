@@ -364,8 +364,9 @@ function MessageBlockView({
   const unsubscribeMenu = useToggle()
   const canShowOriginal = thread.id.includes(':') && /-\d+$/.test(message.id)
   const allowImages = showImages || remoteImagesAllowed(settings, message.email)
-  // Plain HTML mail reads on the reading pane's own colours (the opaque ones, also under Liquid Glass).
-  const mailTheme = useMemo(() => ({ dark: settings.theme === 'dark', background: THEMES[settings.theme].reading, text: C.text, link: C.accent }), [settings.theme, C.text, C.accent])
+  // Plain HTML mail reads on a card in the theme's raised colour (the opaque one, also under Liquid
+  // Glass), so the page's edges show against the reader, as the AI summary card's do.
+  const mailTheme = useMemo(() => ({ dark: settings.theme === 'dark', background: THEMES[settings.theme].raised, text: C.text, link: C.accent }), [settings.theme, C.text, C.accent])
   // The body is scanned once per message, not on every scroll frame that re-renders this piece.
   // Pictures worth asking about: tracking pixels never load, so mail with nothing else doesn't ask.
   const remoteImages = useMemo(() => Boolean(message.html) && hasRemoteImages(withoutTrackers(message.html!)), [message.html])

@@ -610,6 +610,14 @@ export const mailBackground = (html: string, theme?: MailTheme) => (themed(html,
 /** Goes in the page's head: WebKit reads the colour scheme there, for scroll bars and form controls. */
 const colorScheme = (html: string, theme?: MailTheme) => `<meta name="color-scheme" content="${themed(html, theme) && theme.dark ? 'dark' : 'light'}">`
 
+/**
+ * A page that scrolls says so: a scroll bar that stays visible (macOS's overlay ones show only while
+ * scrolling) and a fade at the bottom while there's more below, with room after the last line so the
+ * fade never sits on it. The measuring script (mail-snapshot.m) marks the page `jefi-scrolls`.
+ */
+const scrollStyle = (background: string) =>
+  `<style id="jefi-scroll">::-webkit-scrollbar{width:11px;height:11px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:rgba(128,128,128,.5);border:3px solid transparent;border-radius:6px;background-clip:content-box}::-webkit-scrollbar-corner{background:transparent}html.jefi-scrolls body{padding-bottom:28px!important}html.jefi-scrolls body::after{content:""!important;position:fixed!important;left:0!important;right:11px!important;bottom:0!important;height:28px!important;background:linear-gradient(${background}00,${background})!important;pointer-events:none!important;z-index:2147483646!important}</style>`
+
 /** Goes last, after the message's own styles, so it wins against them. */
 function themeStyle(html: string, theme?: MailTheme) {
   if (!themed(html, theme)) return ''
@@ -642,5 +650,5 @@ export function mailPage(html: string, allowRemoteImages: boolean, theme?: MailT
   const rest = doctype ? body.slice(doctype.length) : body
   const page = `${doctype?.trim() || '<!doctype html>'}<html><head>${head}</head>${rest}`
   // Last wins against an email's own a::after styles and colours, including ones marked important.
-  return `${page}${themeStyle(html, theme)}${linkDisclosure}`
+  return `${page}${themeStyle(html, theme)}${scrollStyle(cssColor(mailBackground(html, theme)) ?? '#FFFFFF')}${linkDisclosure}`
 }

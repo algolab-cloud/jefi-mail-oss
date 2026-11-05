@@ -257,3 +257,12 @@ test('the page is never taller than the reader shows, so it can always be seen w
   expect(pageHeight(null, 900, 700, 700)).toBe(676)
   expect(pageHeight(null, 600, 700, null)).toBe(600)
 })
+
+test('a page that scrolls shows it: a lasting scroll bar, and a fade in the page colour while more is below', () => {
+  const plain = mailPage('<p>Long plan</p>', false, dark)
+  expect(plain).toContain('::-webkit-scrollbar-thumb')
+  expect(plain).toContain('html.jefi-scrolls body::after')
+  expect(plain).toContain('linear-gradient(#15151700,#151517)')
+  // Designed mail keeps its white page, so its fade is white too.
+  expect(mailPage('<table bgcolor="#f4f4f4"><tr><td>x</td></tr></table>', false, dark)).toContain('linear-gradient(#FFFFFF00,#FFFFFF)')
+})
