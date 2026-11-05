@@ -13,6 +13,7 @@ import { useAi } from './use-ai'
 import { usePaneWidth } from './resizer'
 import { floatingObstacle } from './html-view'
 import { aiErrorMessage, threadForModel } from './ai'
+import { clearHandoff, currentHandoff, useHandoff, withHandoff } from './assistant-handoff'
 import { assistantUnavailableText, describeTool, needsConfirmation, runAssistant, runAssistantOpenAI, type AssistantEvent, type AssistantTools, type Folder, type ThreadAction } from './assistant'
 import { replyRecipients } from './reply'
 import { runAssistantCodex, type CodexTurn } from './assistant-codex'
@@ -31,7 +32,7 @@ type Part =
   | { kind: 'text'; text: string }
   | { kind: 'confirm'; id: number; question: string; state: 'asking' | 'yes' | 'no' }
   | { kind: 'tool'; id: string; label: string; state: 'running' | 'ok' | 'error'; detail?: string }
-type Entry = { role: 'user'; text: string } | { role: 'assistant'; parts: Part[]; error?: string; done: boolean }
+type Entry = { role: 'user'; text: string; attached?: string } | { role: 'assistant'; parts: Part[]; error?: string; done: boolean }
 
 /** The unpinned chat box. */
 const FLOAT_WIDTH = 400
@@ -84,6 +85,7 @@ export function AssistantPanel({
   const [entries, setEntries] = useState<Entry[]>([])
   const [input, setInput] = useState('')
   const [inputKey, setInputKey] = useState(0)
+  const handoff = useHandoff()
   const [busy, setBusy] = useState(false)
   const running = useRef(false)
   // Each provider keeps the conversation in its own format; switching provider starts a new chat.
@@ -272,7 +274,11 @@ export function AssistantPanel({
     }
     setInput('')
     setInputKey((k) => k + 1)
-    setEntries((prev) => [...prev, { role: 'user', text: message }, { role: 'assistant', parts: [], done: false }])
+    // Read now, not from the render: the person may have removed it a moment ago.
+    const attached = currentHandoff()
+    const modelMessage = withHandoff(message, attached)
+    clearHandoff()
+    setEntries((prev) => [...prev, { role: 'user', text: message, attached: attached?.title }, { role: 'assistant', parts: [], done: false }])
     // Where this turn starts, so a stopped or failed turn can be rolled back whole (a dangling tool call would break the next one).
     const list = connection.provider === 'anthropic' ? h.claude : connection.provider === 'openai' ? h.openai : h.codex
     const start = list.length
@@ -298,10 +304,10 @@ export function AssistantPanel({
     setBusy(true)
     const run =
       connection.provider === 'anthropic'
-        ? (h.claude.push({ role: 'user', content: message }), runAssistant(connection.key, connection.model, h.claude, context(), tools, onEvent, controller.signal))
+        ? (h.claude.push({ role: 'user', content: modelMessage }), runAssistant(connection.key, connection.model, h.claude, context(), tools, onEvent, controller.signal))
         : connection.provider === 'openai'
-          ? (h.openai.push({ role: 'user', content: message }), runAssistantOpenAI(connection.key, connection.model, h.openai, context(), tools, onEvent, controller.signal))
-          : (h.codex.push({ role: 'user', text: message }), runAssistantCodex(connection.model, h.codex, context(), tools, onEvent, controller.signal))
+          ? (h.openai.push({ role: 'user', content: modelMessage }), runAssistantOpenAI(connection.key, connection.model, h.openai, context(), tools, onEvent, controller.signal))
+          : (h.codex.push({ role: 'user', text: modelMessage }), runAssistantCodex(connection.model, h.codex, context(), tools, onEvent, controller.signal))
     run
       .then(() => update((entry) => ({ ...entry, done: true })))
       .catch((error) => {
@@ -388,7 +394,8 @@ export function AssistantPanel({
             ) : (
               entries.map((entry, i) =>
                 entry.role === 'user' ? (
-                  <div key={i} style={{ display: 'flex', flexDirection: 'row', justifyContent: 'flex-end' }}>
+                  <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+                    {entry.attached ? <AttachedLabel title={entry.attached} /> : null}
                     <div style={{ maxWidth: 290, paddingLeft: 12, paddingRight: 12, paddingTop: 8, paddingBottom: 8, borderRadius: 12, backgroundColor: C.chip }}>
                       <text style={{ fontSize: 13.5, lineHeight: 19, color: C.text, fontFamily: FONT }}>{entry.text}</text>
                     </div>
@@ -429,12 +436,13 @@ export function AssistantPanel({
 
           <div style={{ flexShrink: 0, paddingLeft: 12, paddingRight: 12, paddingBottom: 12 }}>
             <div style={{ borderRadius: 10, backgroundColor: C.raised, paddingLeft: 12, paddingRight: 6, paddingTop: 8, paddingBottom: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {handoff ? <AttachedLabel title={handoff.title} onRemove={clearHandoff} /> : null}
               <textarea
                 key={inputKey}
                 testId="assistant-input"
                 autoFocus
                 value={input}
-                placeholder={`Ask ${ai.providerName} about your mail…`}
+                placeholder={handoff ? 'Ask about it, or have it drafted into a reply…' : `Ask ${ai.providerName} about your mail…`}
                 minRows={1}
                 maxRows={6}
                 onChange={(event) => setInput(event.value ?? '')}
@@ -463,6 +471,18 @@ export function AssistantPanel({
           </div>
         </>
       )}
+    </div>
+  )
+}
+
+/** What goes along with a message: above the chat box until sent (removable), then above the message. */
+function AttachedLabel({ title, onRemove }: { title: string; onRemove?: () => void }) {
+  const { C } = useSettings()
+  return (
+    <div testId={onRemove ? 'assistant-attached' : 'assistant-sent-attached'} style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', alignSelf: onRemove ? 'flex-start' : 'flex-end', gap: 6, maxWidth: 290, height: 24, paddingLeft: 8, paddingRight: onRemove ? 2 : 8, borderRadius: 7, backgroundColor: C.overlay }}>
+      <Icon name="sparkles" size={12} color={C.accent} />
+      <text style={{ minWidth: 0, flexShrink: 1, fontSize: 12, color: C.secondary, fontFamily: FONT, whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{title}</text>
+      {onRemove ? <IconButton icon="x" size={11} pad={20} tooltip="Remove" onClick={onRemove} testId="assistant-attached-remove" /> : null}
     </div>
   )
 }
