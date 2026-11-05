@@ -120,7 +120,7 @@ const EDGE_SAMPLES: Sample[] = [
 export type Fixture = Awaited<ReturnType<typeof startFixture>>
 
 /** Boots the servers (`inbox` replaces the sample mail, for curated marketing shots), writes the account and its secret, and returns the env the app needs. */
-export async function startFixture(dir: string, options: { name?: string; /** Signs in as this address (me@example.com by default), for a second account beside another fixture's. */ email?: string; gmail?: boolean; bulk?: number; newestHtml?: boolean; calendar?: boolean; manyAttachments?: boolean; edge?: boolean; inbox?: TestMessage[]; secondAccount?: boolean } = {}) {
+export async function startFixture(dir: string, options: { name?: string; /** Signs in as this address (me@example.com by default), for a second account beside another fixture's. */ email?: string; gmail?: boolean; bulk?: number; newestHtml?: boolean; /** A three-message conversation whose newest message is a long, plain HTML email. */ htmlThread?: boolean; calendar?: boolean; manyAttachments?: boolean; edge?: boolean; inbox?: TestMessage[]; secondAccount?: boolean } = {}) {
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(`${dir}/config`, { recursive: true })
   const login = { user: options.email ?? USER.user, pass: USER.pass }
@@ -151,9 +151,22 @@ export async function startFixture(dir: string, options: { name?: string; /** Si
   const attached = options.manyAttachments
     ? [message({ n: 41, who: 'mira', subject: 'Board pack for Thursday', when: new Date(latest + 120_000), text: 'Everything for the board meeting is attached: the deck, numbers, photos and the invite.\n\nShout if anything is missing.', attachments: ATTACHMENT_SET })]
     : []
+  // Plain HTML (text styles, no backgrounds): the reader draws it in the app's theme, sized to fit.
+  const billing = '<p style="font-family:Arial;color:#222">Hi Mara,</p><p style="font-family:Arial;color:#222">Thanks for the details. Before we set up billing, a few things to confirm.</p>'
+    + ['Option A', 'Option B'].map((name) => `<h3 style="color:#111">${name}</h3><p style="color:#222">Meter readings are captured monthly and bills are shared by email and SMS.</p>`).join('')
+    + '<h3 style="color:#111">Required for both options</h3><p style="color:#222">Please confirm the tax classifications for:</p><ul><li>Water supply charges</li><li>Any additional charges on your bills <i>(for example, exempt or 16% VAT)</i></li></ul>'
+    + '<h3 style="color:#111">Next steps</h3><p style="color:#222">Once we receive your details and complete the setup, we will generate and share <b>sample bills</b> for your review before going live.</p>'
+    + '<p style="color:#222">Best regards,<br>Jules Moreau<br><a href="https://northlight.example">Northlight Utilities</a></p>'
+  const thread = options.htmlThread
+    ? [
+        message({ n: 70, who: 'jules', subject: 'Billing setup', when: new Date(latest + 180_000), text: 'Hi Mara, can you share the meter list?', seen: true, messageId: '<billing-1@example.com>' }),
+        message({ n: 71, who: 'lea', subject: 'Re: Billing setup', when: new Date(latest + 240_000), text: 'Attached the list. Option B suits us best.', seen: true, messageId: '<billing-2@example.com>', inReplyTo: '<billing-1@example.com>' }),
+        message({ n: 72, who: 'jules', subject: 'Re: Billing setup', when: new Date(latest + 300_000), text: 'Thanks for the details.', html: `<html><body>${billing}</body></html>`, seen: false, messageId: '<billing-3@example.com>', inReplyTo: '<billing-2@example.com>' }),
+      ]
+    : []
   const imap = await startImapServer(
     {
-      INBOX: options.inbox ?? [...SAMPLES.map(message), ...newest, ...attached, ...(options.calendar ? CALENDAR_SAMPLES.map(message) : []), ...(options.edge ? EDGE_SAMPLES.map(message) : []), ...bulk],
+      INBOX: options.inbox ?? [...SAMPLES.map(message), ...newest, ...attached, ...thread, ...(options.calendar ? CALENDAR_SAMPLES.map(message) : []), ...(options.edge ? EDGE_SAMPLES.map(message) : []), ...bulk],
       ...(options.gmail ?? true
         ? {
             '[Gmail]/All Mail': { 'special-use': '\\All', messages: options.inbox ?? [...SAMPLES.map(message), ...bulk] },

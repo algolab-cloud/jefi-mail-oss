@@ -1,8 +1,8 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { expect, test } from 'bun:test'
-import { clipAround, hasRemoteImages } from './html-view'
-import { imageSources, linkPositionFromWindowPoint, mailPage, mailViewHidden, navigationPolicy, snapshotBoundsAllowed, snapshotIdentityMatches, stripSpeculativeLinks } from './native/mail-webview'
+import { clipAround, hasRemoteImages, maxPageHeight, pageHeight } from './html-view'
+import { imageSources, linkPositionFromWindowPoint, mailBackground, mailPage, takesTheme, mailViewHidden, navigationPolicy, snapshotBoundsAllowed, snapshotIdentityMatches, stripSpeculativeLinks } from './native/mail-webview'
 import { DEFAULT_SETTINGS, allowRemoteImagesFrom, forgetRemoteImageSender, loadSettings, remoteImagesAllowed, saveSettings } from './theme'
 
 const clip = { x: 1000, y: 100, width: 900, height: 1000 }
@@ -202,4 +202,59 @@ test('links to a spot in the message scroll there; other links go to review, oth
   expect(navigationPolicy('about:blank#pricing', false)).toBe('cancel')
   expect(navigationPolicy('https://example.com/#pricing', true)).toBe('review')
   expect(navigationPolicy('https://tracker.example/pixel.gif', false)).toBe('cancel')
+})
+
+const dark = { dark: true, background: '#151517', text: '#ECECEE', link: '#E5484D' }
+const light = { dark: false, background: '#FFFFFF', text: '#111113', link: '#E5484D' }
+
+test('plain HTML mail takes the theme; mail with its own backgrounds keeps its white page', () => {
+  const plain = '<p style="color:#222">Please confirm the <b>KRA</b> classifications.</p>'
+  expect(takesTheme(plain)).toBe(true)
+  expect(takesTheme('<div style="background-color: transparent">x</div>')).toBe(true)
+  for (const designed of ['<table bgcolor="#f4f4f4"><tr><td>x</td></tr></table>', '<div style="background:#fff">x</div>', '<style>body{background-color:white}</style>x', '<td background="cid:bg">x</td>'])
+    expect(takesTheme(designed)).toBe(false)
+
+  const page = mailPage(plain, false, dark)
+  expect(page).toContain('<meta name="color-scheme" content="dark">')
+  // In the head, ahead of the message, and the colours last, after the message's own styles.
+  expect(page.indexOf('color-scheme')).toBeLessThan(page.indexOf('<p style'))
+  expect(page.indexOf('jefi-theme')).toBeGreaterThan(page.indexOf('<p style'))
+  expect(page).toContain('html,body{background:#151517!important;color:#ECECEE!important}')
+  expect(page).toContain('body *{color:inherit!important}')
+  expect(mailBackground(plain, dark)).toBe('#151517')
+
+  // Light: the page and default text follow the theme, the sender's text colours stay.
+  expect(mailPage(plain, false, light)).not.toContain('color:inherit')
+  // Designed mail, or no theme at all: the page as before.
+  const designed = '<table bgcolor="#f4f4f4"><tr><td>x</td></tr></table>'
+  expect(mailPage(designed, false, dark)).toBe(mailPage(designed, false))
+  expect(mailPage(designed, false)).toContain('<meta name="color-scheme" content="light">')
+  expect(mailPage(designed, false)).not.toContain('jefi-theme')
+  expect(mailBackground(designed, dark)).toBe('#FFFFFF')
+})
+
+test('theme colours that are not plain hex never reach the page style sheet', () => {
+  const page = mailPage('<p>x</p>', false, { ...dark, background: 'red}</style><script>x</script>', text: '#ECECEE' })
+  expect(page).not.toContain('<script>')
+  expect(page).toContain('background:#FFFFFF!important')
+})
+
+test('the page is as tall as the message once measured, within what a snapshot can cover', () => {
+  expect(pageHeight(null, 600, 700)).toBe(600)
+  expect(pageHeight(240, 600, 700)).toBe(240)
+  expect(pageHeight(10, 600, 700)).toBe(48)
+  expect(pageHeight(90_000, 600, 700)).toBe(maxPageHeight(700))
+  expect(maxPageHeight(700) * 700).toBeLessThanOrEqual(4_000_000)
+  expect(maxPageHeight(300)).toBe(8000)
+  expect(snapshotBoundsAllowed(700, maxPageHeight(700))).toBe(true)
+})
+
+
+test('a page that scrolls shows it: a lasting scroll bar, and a fade in the page colour while more is below', () => {
+  const plain = mailPage('<p>Long plan</p>', false, dark)
+  expect(plain).toContain('::-webkit-scrollbar-thumb')
+  expect(plain).toContain('html.jefi-scrolls body::after')
+  expect(plain).toContain('linear-gradient(#15151700,#151517)')
+  // Designed mail keeps its white page, so its fade is white too.
+  expect(mailPage('<table bgcolor="#f4f4f4"><tr><td>x</td></tr></table>', false, dark)).toContain('linear-gradient(#FFFFFF00,#FFFFFF)')
 })

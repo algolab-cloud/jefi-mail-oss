@@ -17,7 +17,9 @@ const home = `${process.cwd()}/tmp/html-placement-idle-home`
 const log = `${home}/placement.jsonl`
 rmSync(home, { recursive: true, force: true })
 mkdirSync(home, { recursive: true })
-const fixture = await startFixture(home, { newestHtml: true })
+// A conversation that runs past the reader (a three-message thread in a short window), so there's
+// something to scroll: the page is only as tall as its message, so a short one alone would fit.
+const fixture = await startFixture(home, { htmlThread: true })
 const dir = fixture.env.JEFI_CONFIG_DIR
 if (!dir) throw new Error('fixture has no JEFI_CONFIG_DIR')
 mkdirSync(dir, { recursive: true })
@@ -26,7 +28,7 @@ writeFileSync(`${dir}/settings.json`, JSON.stringify({ ...DEFAULT_SETTINGS, onbo
 const app = await launch({
   command: 'bun',
   args: ['src/mail.tsx'],
-  env: { GPUIX_BACKGROUND: '1', JEFI_SKIP_ONBOARDING: '1', JEFI_PLACEMENT_LOG: log, ...fixture.env },
+  env: { GPUIX_BACKGROUND: '1', JEFI_SKIP_ONBOARDING: '1', JEFI_WINDOW: '1440x640', JEFI_PLACEMENT_LOG: log, ...fixture.env },
   cwd: process.cwd(),
 })
 

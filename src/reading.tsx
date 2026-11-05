@@ -6,7 +6,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { Tooltip } from './tooltip'
 import { useContextMenu, type ContextItem } from './context-menu'
 import { chunkMarkdown, splitQuoted } from './mail-text'
-import { FONT, READ_PAD_LEFT, READ_PAD_RIGHT, TOPBAR_HEIGHT, allowRemoteImagesFrom, mixHex, remoteImagesAllowed, useSettings } from './theme'
+import { FONT, READ_PAD_LEFT, READ_PAD_RIGHT, THEMES, TOPBAR_HEIGHT, allowRemoteImagesFrom, mixHex, remoteImagesAllowed, useSettings } from './theme'
 import { Icon, IconButton, type IconName } from './icons'
 import { AttachmentCard, Divider, Face } from './primitives'
 import type { Attachment, DraftFields, FolderId, Label, LabelTone, MailAddress, MailFolder, MailThread, Message } from './data'
@@ -23,7 +23,9 @@ import { Spinner } from './toast'
 import { aiErrorMessage, draftReply, summarizeThread, translateMessage } from './ai'
 import { useAi } from './use-ai'
 import { draftFromMailto, LinkPopover, type LinkPosition, type LinkReviewRequest } from './link-popover'
-import { copyLink, openExternalLink } from './native/mail-webview'
+import { copyLink, copyText, openExternalLink } from './native/mail-webview'
+import { sendToAssistant } from './assistant-handoff'
+import { SummaryCard } from './summary-card'
 import { pickAttachmentDestination, pickAttachmentDirectory, pickOriginalDestination, saveAttachmentInDirectory, saveAttachmentTo, saveOriginalTo } from './native/file-picker'
 import { replySubject } from './engine/mime'
 import { messageText, replyDraft as buildReplyDraft, replyRecipients, type ReplyMode } from './reply'
@@ -364,6 +366,9 @@ function MessageBlockView({
   const unsubscribeMenu = useToggle()
   const canShowOriginal = thread.id.includes(':') && /-\d+$/.test(message.id)
   const allowImages = showImages || remoteImagesAllowed(settings, message.email)
+  // Plain HTML mail reads on a card in the theme's raised colour (the opaque one, also under Liquid
+  // Glass), so the page's edges show against the reader, as the AI summary card's do.
+  const mailTheme = useMemo(() => ({ dark: settings.theme === 'dark', background: THEMES[settings.theme].raised, text: C.text, link: C.accent }), [settings.theme, C.text, C.accent])
   // The body is scanned once per message, not on every scroll frame that re-renders this piece.
   // Pictures worth asking about: tracking pixels never load, so mail with nothing else doesn't ask.
   const remoteImages = useMemo(() => Boolean(message.html) && hasRemoteImages(withoutTrackers(message.html!)), [message.html])
@@ -680,8 +685,8 @@ function MessageBlockView({
           <WindowFittedHtml
             html={shownPage!}
             allowRemoteImages={allowImages}
+            theme={mailTheme}
             onLink={reviewLink}
-            linkDisclosure={find ? undefined : { sender: message.email, trustedDomains: settings.trustedLinkDomains }}
           />
         </div>
       ) : part.kind === 'markdown' ? (
@@ -1499,7 +1504,16 @@ function ReadingPaneView({
       >
         {items.slice(range.start, range.end).map((item) =>
           item.kind === 'summary' ? (
-            shownSummary ? <SummaryCard key="summary" provider={ai.providerName} summary={shownSummary} onClose={closeSummary} onRetry={() => runCard(shownSummary.kind)} /> : null
+            shownSummary ? <SummaryCard
+                key="summary"
+                provider={ai.providerName}
+                subject={thread.subject}
+                summary={shownSummary}
+                onClose={closeSummary}
+                onRetry={() => runCard(shownSummary.kind)}
+                onCopy={(text) => notify(copyText(text) ? 'Copied' : "Couldn't copy")}
+                onAsk={sendToAssistant}
+              /> : null
           ) : item.kind === 'top' ? (
             // Keyed by thread so opening another one remounts it and it settles in from just below.
             <motion.div key={`top-${thread.id}`} initial={{ opacity: 0, top: 6 }} animate={{ opacity: 1, top: 0 }} transition={{ duration: 0.16, ease: 'easeOut' }} style={{ position: 'relative', width: '100%', flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
@@ -1675,32 +1689,6 @@ function readerLanguage() {
   } catch {
     return 'English'
   }
-}
-
-/** AI summary or translation above the conversation: can be closed or tried again. */
-function SummaryCard({ provider, summary, onClose, onRetry }: { provider: string; summary: { kind: 'summary' | 'translation'; text: string; state: 'streaming' | 'done' | 'error'; error?: string }; onClose: () => void; onRetry: () => void }) {
-  const { C } = useSettings()
-  const translation = summary.kind === 'translation'
-  return (
-    <div style={{ width: '100%', flexShrink: 0, paddingLeft: READ_PAD_LEFT, paddingRight: READ_PAD_RIGHT, paddingTop: 12 }}>
-      <div testId="ai-summary" style={{ borderRadius: 12, backgroundColor: C.raised, paddingLeft: 14, paddingRight: 8, paddingTop: 8, paddingBottom: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8, height: 26 }}>
-          <Icon name={translation ? 'languages' : 'sparkles'} size={14} color={C.accent} />
-          <text style={{ flexGrow: 1, fontSize: 12.5, fontWeight: 600, color: C.secondary, fontFamily: FONT }}>{translation ? 'Translation' : 'Summary'} · {provider}</text>
-          {summary.state === 'streaming' ? <Spinner size={12} color={C.accent} /> : null}
-          {summary.state === 'error' ? <Button label="Try again" variant="ghost" onClick={onRetry} testId="ai-summary-retry" /> : null}
-          <IconButton icon="x" size={14} pad={24} tooltip={translation ? 'Close translation' : 'Close summary'} onClick={onClose} testId="ai-summary-close" />
-        </div>
-        {summary.state === 'error' ? (
-          <text style={{ fontSize: 13, color: C.accent, fontFamily: FONT }}>{summary.error ?? 'Something went wrong'}</text>
-        ) : summary.text ? (
-          <MailMarkdown source={summary.text} testId="ai-summary-text" />
-        ) : (
-          <text style={{ fontSize: 13, color: C.muted, fontFamily: FONT }}>{translation ? 'Translating…' : 'Reading the conversation…'}</text>
-        )}
-      </div>
-    </div>
-  )
 }
 
 function NewLabelItem({ onCreate }: { onCreate: (name: string) => void }) {

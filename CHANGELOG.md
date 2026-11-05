@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.1 — 2026-11-05
+
+- HTML mail is shown at its full height, so the conversation scrolls as one: nothing is cut off under the reply box, and scrolling over a message moves the conversation.
+- Plain HTML mail follows the theme, so it reads light on a dark card in dark mode. Mail with its own design keeps its look.
+- The AI summary header no longer overlaps the text, and a summary can be copied or taken to the assistant. The assistant uses Claude Sonnet 5.5.
+- ⌘C copies selected text. Long menus, such as labels, fit the window and scroll. Toolbar tooltips no longer flicker.
+
+[Full release notes](docs/releases/0.9.1.md)
+
 ## 0.9.0 — 2026-11-03
 
 - Jefi Mail is free and open source under the GPL. The trial and licence keys are gone: everything works, with nothing to buy.

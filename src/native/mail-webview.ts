@@ -1,6 +1,6 @@
 import { appendFileSync } from 'node:fs'
 import { onOverlaysChange, overlaysOpen } from '../overlays'
-import { snapshotMailWebView } from './mail-snapshot'
+import { forwardMailScroll, mailWebViewClass, measureMailContentHeight, snapshotMailWebView } from './mail-snapshot'
 import { alloc, available, callBlockWithInt, cls, fromNSString, loadWebKit, makeObject, msg, msgBool, msgBoolResult, msgGetValue, msgIndex, msgInt, msgRect, msgRectObj, nsString, release, msgDouble, type Id } from './objc'
 
 // ---------------------------------------------------------------------------
@@ -50,6 +50,9 @@ let visibleCaptureGeneration = -1
 /** Page already given a capture attempt while hidden under this overlay session. */
 let hiddenCaptureTried = ''
 let linkReviewBesideWeb = false
+/** The loaded page's content height at the width it was measured at. */
+let measured: { page: string; width: number; height: number } | null = null
+let measureTimers: Array<ReturnType<typeof setTimeout>> = []
 
 const MOUSE_EVENT_TYPES = new Set([1, 2, 3, 4]) // left/right mouse down/up
 
@@ -320,7 +323,8 @@ function ensureView(): Id {
   msgBool(msg(config, 'defaultWebpagePreferences'), 'setAllowsContentJavaScript:', false)
   // Mail shouldn't leave cookies or caches behind.
   msg(config, 'setWebsiteDataStore:', msg(cls('WKWebsiteDataStore'), 'nonPersistentDataStore'))
-  view = msgRectObj(alloc('WKWebView'), 'initWithFrame:configuration:', 0, 0, 10, 10, config)
+  // The helper's subclass when it's there, so scrolling over a fitted message scrolls the reader.
+  view = msgRectObj(alloc(cls(mailWebViewClass()) ? mailWebViewClass() : 'WKWebView'), 'initWithFrame:configuration:', 0, 0, 10, 10, config)
   release(config)
   // The page is a card with rounded corners, like the placeholder drawn beneath it (html-view.tsx).
   msgBool(view, 'setWantsLayer:', true)
@@ -356,6 +360,7 @@ function ensureView(): Id {
         loadedShown = shown
         // Finished under an open overlay: take the stand-in snapshot now rather than never.
         syncMailVisibility()
+        measureSoon()
       },
     },
   ])
@@ -378,12 +383,14 @@ function ensureView(): Id {
  * `allowRemoteImages` puts https: images in the policy; the page reloads when that changes, because
  * the policy is part of the page.
  */
-export function showMail(html: string, allowRemoteImages = false, handleLink?: (url: string, position?: LinkPosition) => void) {
+export function showMail(html: string, allowRemoteImages = false, handleLink?: (url: string, position?: LinkPosition) => void, theme?: MailTheme) {
   onLink = handleLink ?? null
   const web = ensureView()
   if (!web) return false
-  const page = mailPage(html, allowRemoteImages)
+  const page = mailPage(html, allowRemoteImages, theme)
   if (page !== shown) {
+    // A new message starts at its top, and keeps the wheel until it's measured and known to fit.
+    forwardMailScroll(web, false, true)
     snapshotGeneration++
     discardFrozenSnapshot()
     loadedShown = ''
@@ -419,6 +426,7 @@ export function place(frame: Frame, clip: Frame, windowHeight: number) {
   msgRect(clipper, 'setFrame:', visible.x, windowHeight - visible.y - visible.height, Math.max(visible.width, 1), Math.max(visible.height, 1))
   msgRect(view, 'setFrame:', frame.x - visible.x, visible.y + visible.height - frame.y - frame.height, Math.max(frame.width, 1), Math.max(frame.height, 1))
   placed = true
+  if (measured && measured.page === shown && Math.abs(measured.width - frame.width) >= 1) measureSoon()
   if (changed) {
     // The frozen image no longer matches the layout; syncMailVisibility retakes it while hidden.
     snapshotGeneration++
@@ -432,8 +440,48 @@ export function place(frame: Frame, clip: Frame, windowHeight: number) {
 const currentMailSnapshot = () => snapshotShown === shown && loadedShown === shown ? frozenSnapshot : null
 
 /** Snapshot only when it belongs to these exact message bytes and image policy. */
-export const mailSnapshot = (html: string, allowRemoteImages = false) =>
-  snapshotShown === mailPage(html, allowRemoteImages) ? currentMailSnapshot() : null
+export const mailSnapshot = (html: string, allowRemoteImages = false, theme?: MailTheme) =>
+  snapshotShown === mailPage(html, allowRemoteImages, theme) ? currentMailSnapshot() : null
+
+/** Shortest the page is drawn, so a one-line message still reads as a page. */
+export const MIN_PAGE_HEIGHT = 48
+/** Tallest: what a frozen snapshot can still cover (see snapshotBoundsAllowed). Past it, the page scrolls inside. */
+export const maxPageHeight = (width: number) => Math.max(MIN_PAGE_HEIGHT, Math.min(8000, Math.floor(4_000_000 / Math.max(width, 1))))
+
+/** Whether the shown page holds its whole message: scrolling over it then always moves the conversation. */
+export function setMailFits(fits: boolean) {
+  forwardMailScroll(view, fits)
+}
+
+/** How tall these exact message bytes are, once loaded and measured; null until then. */
+export const mailContentHeight = (html: string, allowRemoteImages = false, theme?: MailTheme) =>
+  measured && measured.page === mailPage(html, allowRemoteImages, theme) ? measured.height : null
+
+function measureContent() {
+  const web = view
+  const page = shown
+  const width = positionedFrame?.width
+  if (!web || !page || loadedShown !== page || !width) return
+  void measureMailContentHeight(web).then((height) => {
+    if (height === null || view !== web || shown !== page) return
+    if (measured?.page === page && measured.height === height) {
+      measured.width = width
+      return
+    }
+    measured = { page, width, height }
+    snapshotChanged()
+  })
+}
+
+/**
+ * Measures the loaded page now and again shortly after: web fonts, images and the reader's own
+ * resizing can still move its height once it has loaded.
+ */
+function measureSoon() {
+  for (const timer of measureTimers) clearTimeout(timer)
+  measureContent()
+  measureTimers = [150, 600, 1500].map((ms) => setTimeout(measureContent, ms))
+}
 
 // Menus and dialogs are drawn by GPUIX, underneath this view: freeze its current pixels, then step
 // aside. The GPUI tree paints the frozen image at the same bounds until the overlay closes.
@@ -459,6 +507,9 @@ export function hideMail() {
 export function destroyMail() {
   snapshotGeneration++
   discardFrozenSnapshot()
+  for (const timer of measureTimers) clearTimeout(timer)
+  measureTimers = []
+  measured = null
   if (!view) return
   msg(clipper, 'removeFromSuperview')
   msg(view, 'setNavigationDelegate:', null)
@@ -494,15 +545,18 @@ export function openExternalLink(raw: string) {
   }
 }
 
-/** Copy without visiting or otherwise resolving the destination. */
-export function copyLink(raw: string) {
+/** Puts plain text on the clipboard. */
+export function copyText(text: string) {
   if (!available) return false
   const pasteboard = msg(cls('NSPasteboard'), 'generalPasteboard')
   if (!pasteboard) return false
   msg(pasteboard, 'clearContents')
-  msg(pasteboard, 'setString:forType:', nsString(raw), nsString('public.utf8-plain-text'))
+  msg(pasteboard, 'setString:forType:', nsString(text), nsString('public.utf8-plain-text'))
   return true
 }
+
+/** Copy without visiting or otherwise resolving the destination. */
+export const copyLink = (raw: string) => copyText(raw)
 
 /**
  * Where the message page may load images from. Images that travelled with the mail (data:, cid:)
@@ -536,12 +590,55 @@ export function stripSpeculativeLinks(html: string): string {
  */
 const LEADING_DOCTYPE = /^(?:\s|<!--(?:[^-]|-(?!->))*-->)*<!doctype[^>]*>/i
 
+/** The app's colours, for mail that brings none of its own. */
+export type MailTheme = { dark: boolean; background: string; text: string; link: string }
+
+/**
+ * A background colour or image other than none/transparent: the sender designed the page's
+ * colours, so it keeps them (on white) rather than taking the app's.
+ */
+const OWN_BACKGROUND = /\bbgcolor\s*=|\bbackground\s*=|\bbackground(?:-color|-image)?\s*:\s*(?!\s*(?:none|transparent|inherit|initial|unset)\b)[^;"'}\s]/i
+
+/** Whether the message is plain enough to take the app's theme: it sets no backgrounds. */
+export const takesTheme = (html: string) => !OWN_BACKGROUND.test(html)
+
+/** CSS colour values only (no `;`, braces, quotes or `<`), since they go into a style sheet. */
+const cssColor = (value: string) => (/^#[0-9a-f]{3,8}$/i.test(value) ? value : null)
+
+const themed = (html: string, theme?: MailTheme): theme is MailTheme => Boolean(theme && takesTheme(html))
+
+/** The page colour behind the message: the theme's for plain mail, white for designed mail. */
+export const mailBackground = (html: string, theme?: MailTheme) => (themed(html, theme) ? theme.background : '#FFFFFF')
+
+/** Goes in the page's head: WebKit reads the colour scheme there, for scroll bars and form controls. */
+const colorScheme = (html: string, theme?: MailTheme) => `<meta name="color-scheme" content="${themed(html, theme) && theme.dark ? 'dark' : 'light'}">`
+
+/**
+ * A page that scrolls says so: a scroll bar that stays visible (macOS's overlay ones show only while
+ * scrolling) and a fade at the bottom while there's more below, with room after the last line so the
+ * fade never sits on it. The measuring script (mail-snapshot.m) marks the page `jefi-scrolls`.
+ */
+const scrollStyle = (background: string) =>
+  `<style id="jefi-scroll">::-webkit-scrollbar{width:11px;height:11px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:rgba(128,128,128,.5);border:3px solid transparent;border-radius:6px;background-clip:content-box}::-webkit-scrollbar-corner{background:transparent}html.jefi-scrolls body{padding-bottom:28px!important}html.jefi-scrolls body::after{content:""!important;position:fixed!important;left:0!important;right:11px!important;bottom:0!important;height:28px!important;background:linear-gradient(${background}00,${background})!important;pointer-events:none!important;z-index:2147483646!important}</style>`
+
+/** Goes last, after the message's own styles, so it wins against them. */
+function themeStyle(html: string, theme?: MailTheme) {
+  if (!themed(html, theme)) return ''
+  const background = cssColor(theme.background) ?? '#FFFFFF'
+  const text = cssColor(theme.text) ?? '#000000'
+  const link = cssColor(theme.link) ?? '#3E63DD'
+  // In the dark, text colours a composer picked for white paper (black, dark grey) would vanish, so
+  // all text takes the theme's ink. In the light, the sender's text colours already suit the page.
+  const ink = theme.dark ? `body *{color:inherit!important}a[href],a[href] *{color:${link}!important}` : ''
+  return `<style id="jefi-theme">html,body{background:${background}!important;color:${text}!important}${ink}</style>`
+}
+
 /** The message page: its HTML under a policy that allows inline styles and images, nothing else. */
-export function mailPage(html: string, allowRemoteImages: boolean) {
+export function mailPage(html: string, allowRemoteImages: boolean, theme?: MailTheme) {
   const images = imageSources(allowRemoteImages)
   const policy = `default-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src ${images}; media-src 'none'; form-action 'none'`
   // x-dns-prefetch-control stops WebKit resolving hostnames it finds in the message on its own.
-  const head = `<meta http-equiv="Content-Security-Policy" content="${policy}"><meta http-equiv="x-dns-prefetch-control" content="off"><meta name="color-scheme" content="light"><style>body{margin:16px;font:14px -apple-system,system-ui,sans-serif;word-wrap:break-word}img{max-width:100%;height:auto}</style>`
+  const head = `<meta http-equiv="Content-Security-Policy" content="${policy}"><meta http-equiv="x-dns-prefetch-control" content="off">${colorScheme(html, theme)}<style>body{margin:16px;font:14px -apple-system,system-ui,sans-serif;word-wrap:break-word}img{max-width:100%;height:auto}</style>`
   const body = stripSpeculativeLinks(html)
   // App-owned CSS discloses href text in the web view itself. Page JavaScript stays disabled, and
   // reading attr(href) cannot resolve, prefetch, or otherwise contact the destination.
@@ -555,6 +652,6 @@ export function mailPage(html: string, allowRemoteImages: boolean) {
   const doctype = body.match(LEADING_DOCTYPE)?.[0]
   const rest = doctype ? body.slice(doctype.length) : body
   const page = `${doctype?.trim() || '<!doctype html>'}<html><head>${head}</head>${rest}`
-  // Last wins against an email's own a::after styles, including declarations marked important.
-  return `${page}${linkDisclosure}`
+  // Last wins against an email's own a::after styles and colours, including ones marked important.
+  return `${page}${themeStyle(html, theme)}${scrollStyle(cssColor(mailBackground(html, theme)) ?? '#FFFFFF')}${linkDisclosure}`
 }
