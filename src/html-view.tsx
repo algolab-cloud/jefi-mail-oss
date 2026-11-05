@@ -1,13 +1,11 @@
 import { appendFileSync } from 'node:fs'
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useSyncExternalStore, type RefObject } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useSyncExternalStore, type RefObject } from 'react'
 import { useGpuix, useWindowSize, type PublicInstance } from '@gpuix/react'
-import { MAIL_CORNER_RADIUS, destroyMail, fullRenderingAvailable, hideMail, mailSnapshot, mailSnapshotRevision, place, setMailSnapshotImageReleaser, showMail, subscribeMailSnapshots } from './native/mail-webview'
+import { MAIL_CORNER_RADIUS, MIN_PAGE_HEIGHT, destroyMail, fullRenderingAvailable, hideMail, mailBackground, mailContentHeight, mailSnapshot, mailSnapshotRevision, maxPageHeight, place, setMailFits, setMailSnapshotImageReleaser, showMail, subscribeMailSnapshots, type MailTheme } from './native/mail-webview'
 import type { LinkPosition } from './link-popover'
-import { htmlLinks } from './link-accessibility'
-import { LinkDestinationList, type LinkDisclosureContext } from './markdown'
 import { onGeometryMayChange } from './geometry-wake'
 
-export { fullRenderingAvailable }
+export { fullRenderingAvailable, type MailTheme }
 
 // ---------------------------------------------------------------------------
 // Remote images
@@ -81,15 +79,15 @@ export function clipAround(clip: Box, obstacle: Box | null): Box {
  * exactly over it. The native view isn't part of GPUIX's tree, so it follows the placeholder by
  * reading its bounds: often while the layout moves, rarely once it has settled.
  */
-function useNativeMailView(html: string, allowRemoteImages: boolean, onLink: (url: string) => void, sync: () => boolean) {
+function useNativeMailView(html: string, allowRemoteImages: boolean, theme: MailTheme | undefined, onLink: (url: string) => void, sync: () => boolean) {
   const wakeRef = useRef<(() => void) | null>(null)
   // Any render may have moved the placeholder.
   useEffect(() => wakeRef.current?.())
 
   useEffect(() => {
-    showMail(html, allowRemoteImages, onLink)
+    showMail(html, allowRemoteImages, onLink, theme)
     sync()
-  }, [html, allowRemoteImages, onLink, sync])
+  }, [html, allowRemoteImages, theme, onLink, sync])
 
   // Geometry GPUIX doesn't announce (layout settling, animations) is still caught by polling, but
   // quickly only while something moves: after SETTLE_MS of unchanged placement it drops to IDLE_MS,
@@ -125,7 +123,20 @@ function useNativeMailView(html: string, allowRemoteImages: boolean, onLink: (ur
   useEffect(() => () => destroyMail(), [])
 }
 
-export function FullHtml({ html, height, allowRemoteImages = false, onLink, linkDisclosure }: { html: string; height: number; allowRemoteImages?: boolean; onLink: (url: string, position: LinkPosition) => void; linkDisclosure?: LinkDisclosureContext }) {
+export { maxPageHeight }
+
+/**
+ * The page's height: as tall as the message once WebKit has measured it, so the conversation is the one
+ * thing that scrolls, with the page's rounded corners passing by at its ends. Only a message taller
+ * than a frozen snapshot can cover (maxPageHeight) scrolls inside its page. `fallback` holds the place
+ * until the message is measured, and stands in for good where the measuring helper isn't available.
+ */
+export function pageHeight(measured: number | null, fallback: number, width: number | null) {
+  if (measured === null) return fallback
+  return Math.min(Math.max(measured, MIN_PAGE_HEIGHT), width ? maxPageHeight(width) : 8000)
+}
+
+export function FullHtml({ html, height, allowRemoteImages = false, theme, onLink }: { html: string; height: number; allowRemoteImages?: boolean; theme?: MailTheme; onLink: (url: string, position: LinkPosition) => void }) {
   const ref = useRef<PublicInstance>(null)
   const renderer = useGpuix().renderer
   const releaseImageDataUrl = renderer?.releaseImageDataUrl
@@ -133,9 +144,14 @@ export function FullHtml({ html, height, allowRemoteImages = false, onLink, link
   const { height: windowHeight } = useWindowSize()
   const clipRef = useContext(ClipContext)
   const last = useRef('')
-  const links = useMemo(() => linkDisclosure ? htmlLinks(html) : [], [html, linkDisclosure])
   useSyncExternalStore(subscribeMailSnapshots, mailSnapshotRevision, mailSnapshotRevision)
-  const snapshot = mailSnapshot(html, allowRemoteImages)
+  const snapshot = mailSnapshot(html, allowRemoteImages, theme)
+  const width = ref.current ? renderer?.getElementBounds?.(ref.current.id)?.width ?? null : null
+  const measured = mailContentHeight(html, allowRemoteImages, theme)
+  const shownHeight = pageHeight(measured, height, width)
+  // Whole message shown: scrolling over it moves the conversation. Otherwise the page scrolls too.
+  const fits = measured !== null && measured <= shownHeight
+  useEffect(() => setMailFits(fits), [fits, html])
 
   // Whether placement changed, which is what the poll's back-off counts.
   const hide = () => {
@@ -165,16 +181,15 @@ export function FullHtml({ html, height, allowRemoteImages = false, onLink, link
     onLink(url, position)
   }, [boundsOf, onLink])
 
-  useNativeMailView(html, allowRemoteImages, reviewLink, sync)
+  useNativeMailView(html, allowRemoteImages, theme, reviewLink, sync)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
-      <div ref={ref} testId="html-full" style={{ height, borderRadius: MAIL_CORNER_RADIUS, backgroundColor: '#FFFFFF', flexShrink: 0, overflow: 'hidden' }}>
+      <div ref={ref} testId="html-full" style={{ height: shownHeight, borderRadius: MAIL_CORNER_RADIUS, backgroundColor: mailBackground(html, theme), flexShrink: 0, overflow: 'hidden' }}>
         {snapshot ? (
           <img testId="html-overlay-snapshot" src={snapshot} objectFit="fill" style={{ width: '100%', height: '100%', pointerEvents: 'none' }} />
         ) : null}
       </div>
-      {linkDisclosure ? <LinkDestinationList links={links} disclosure={linkDisclosure} onLink={reviewLink} testId="html-full-links" /> : null}
     </div>
   )
 }

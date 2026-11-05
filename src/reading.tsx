@@ -6,7 +6,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { Tooltip } from './tooltip'
 import { useContextMenu, type ContextItem } from './context-menu'
 import { chunkMarkdown, splitQuoted } from './mail-text'
-import { FONT, READ_PAD_LEFT, READ_PAD_RIGHT, TOPBAR_HEIGHT, allowRemoteImagesFrom, mixHex, remoteImagesAllowed, useSettings } from './theme'
+import { FONT, READ_PAD_LEFT, READ_PAD_RIGHT, THEMES, TOPBAR_HEIGHT, allowRemoteImagesFrom, mixHex, remoteImagesAllowed, useSettings } from './theme'
 import { Icon, IconButton, type IconName } from './icons'
 import { AttachmentCard, Divider, Face } from './primitives'
 import type { Attachment, DraftFields, FolderId, Label, LabelTone, MailAddress, MailFolder, MailThread, Message } from './data'
@@ -364,6 +364,9 @@ function MessageBlockView({
   const unsubscribeMenu = useToggle()
   const canShowOriginal = thread.id.includes(':') && /-\d+$/.test(message.id)
   const allowImages = showImages || remoteImagesAllowed(settings, message.email)
+  // Plain HTML mail reads on a card in the theme's raised colour (the opaque one, also under Liquid
+  // Glass), so the page's edges show against the reader, as the AI summary card's do.
+  const mailTheme = useMemo(() => ({ dark: settings.theme === 'dark', background: THEMES[settings.theme].raised, text: C.text, link: C.accent }), [settings.theme, C.text, C.accent])
   // The body is scanned once per message, not on every scroll frame that re-renders this piece.
   // Pictures worth asking about: tracking pixels never load, so mail with nothing else doesn't ask.
   const remoteImages = useMemo(() => Boolean(message.html) && hasRemoteImages(withoutTrackers(message.html!)), [message.html])
@@ -680,8 +683,8 @@ function MessageBlockView({
           <WindowFittedHtml
             html={shownPage!}
             allowRemoteImages={allowImages}
+            theme={mailTheme}
             onLink={reviewLink}
-            linkDisclosure={find ? undefined : { sender: message.email, trustedDomains: settings.trustedLinkDomains }}
           />
         </div>
       ) : part.kind === 'markdown' ? (
