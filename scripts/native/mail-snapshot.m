@@ -173,42 +173,87 @@ __attribute__((visibility("default"))) void jefi_mail_content_height(
 }
 
 // ---------------------------------------------------------------------------
-// Scroll forwarding. A message sized to fit has nothing to scroll, but WebKit still takes the wheel
-// over it, so the conversation around it couldn't be scrolled. The app's web view is this subclass:
-// while forwarding is on, vertical scrolling goes to the window's own view (GPUIX, two levels up:
-// web view, clipping view, window view), which scrolls the reader under the pointer. Horizontal
-// scrolling stays with the page (wide newsletters), and forwarding is off for a page too long to fit,
-// which scrolls itself. AppKit sends scrolling to the view under the pointer, which is this one.
+// Scrolling. The app's web view is this subclass, sitting in a clipping view on the window's own
+// view (GPUIX). The page is at most as tall as the reader, so it can always be seen whole; WebKit
+// keeps the wheel over it even when the page has nothing to scroll, so each gesture is routed here
+// as it starts: to the reader (two views up, which scrolls the conversation under the pointer) or
+// to the page. Vertical gestures go to the reader when
+//   - the whole message fits (the page has nothing to scroll),
+//   - the page is cut off by the reader's edge (bring it whole into view first), or
+//   - the page is already at its top or bottom in that direction (carry on into the conversation).
+// Horizontal gestures always stay with the page (wide newsletters).
 // ---------------------------------------------------------------------------
 
+static NSString *const JefiMailEdgesScript =
+    @"[scrollY <= 1, scrollY + innerHeight >= document.documentElement.scrollHeight - 1]";
+
 @interface JefiMailWebView : WKWebView
-@property(nonatomic) BOOL jefiForwardsScroll;
+/** The whole message fits in the page: nothing to scroll inside. */
+@property(nonatomic) BOOL jefiFits;
+@property(nonatomic) BOOL jefiAtTop;
+@property(nonatomic) BOOL jefiAtBottom;
 @end
 
 @implementation JefiMailWebView {
-  /** Decided as each gesture starts, so one gesture doesn't split between the page and the reader. */
-  BOOL _gestureForwarded;
+  /** Decided as each gesture starts, so one gesture never splits between the page and the reader. */
+  BOOL _gestureToReader;
+}
+
+/** Part of the page is outside the reader's visible area (the clipping view is the visible part). */
+- (BOOL)jefiCutOff {
+  NSView *clip = self.superview;
+  return clip && clip.bounds.size.height < self.frame.size.height - 1;
+}
+
+- (void)jefiReadEdges {
+  __weak JefiMailWebView *weakSelf = self;
+  [self evaluateJavaScript:JefiMailEdgesScript inFrame:nil inContentWorld:WKContentWorld.defaultClientWorld
+         completionHandler:^(id _Nullable result, NSError *_Nullable error) {
+    JefiMailWebView *strongSelf = weakSelf;
+    if (!strongSelf || error || ![result isKindOfClass:[NSArray class]] || [(NSArray *)result count] != 2) return;
+    strongSelf.jefiAtTop = [[(NSArray *)result objectAtIndex:0] boolValue];
+    strongSelf.jefiAtBottom = [[(NSArray *)result objectAtIndex:1] boolValue];
+  }];
 }
 
 - (void)scrollWheel:(NSEvent *)event {
-  BOOL starts = event.phase == NSEventPhaseBegan || event.phase == NSEventPhaseMayBegin ||
-      (event.phase == NSEventPhaseNone && event.momentumPhase == NSEventPhaseNone);
-  if (starts) _gestureForwarded = self.jefiForwardsScroll && fabs(event.scrollingDeltaX) <= fabs(event.scrollingDeltaY);
-  NSView *target = self.superview.superview;
-  if (_gestureForwarded && self.jefiForwardsScroll && target) {
-    [target scrollWheel:event];
+  BOOL wheel = event.phase == NSEventPhaseNone && event.momentumPhase == NSEventPhaseNone;
+  BOOL starts = wheel || event.phase == NSEventPhaseBegan || event.phase == NSEventPhaseMayBegin;
+  if (starts) {
+    CGFloat dx = event.scrollingDeltaX, dy = event.scrollingDeltaY;
+    BOOL vertical = fabs(dx) <= fabs(dy);
+    // Positive deltaY shows what's above (the page's top), negative what's below.
+    BOOL pastEdge = (dy > 0 && self.jefiAtTop) || (dy < 0 && self.jefiAtBottom);
+    _gestureToReader = vertical && (self.jefiFits || [self jefiCutOff] || pastEdge);
+  }
+  NSView *reader = self.superview.superview;
+  if (_gestureToReader && reader) {
+    [reader scrollWheel:event];
     return;
   }
   [super scrollWheel:event];
+  // Once the page has scrolled, learn where it stopped, so the next gesture knows whether to carry on.
+  BOOL ends = wheel || event.momentumPhase == NSEventPhaseEnded ||
+      ((event.phase == NSEventPhaseEnded || event.phase == NSEventPhaseCancelled) && event.momentumPhase == NSEventPhaseNone);
+  if (ends) [self jefiReadEdges];
 }
 @end
 
-/** Turns forwarding on or off for the app's web view (made as a JefiMailWebView). */
-__attribute__((visibility("default"))) void jefi_mail_forward_scroll(void *web_view, bool enabled) {
+/**
+ * Tells the app's web view whether its whole message fits. `reset` marks a newly loaded message,
+ * which starts scrolled to its top.
+ */
+__attribute__((visibility("default"))) void jefi_mail_forward_scroll(void *web_view, bool fits, bool reset) {
   if (!web_view) return;
   id view = (__bridge id)web_view;
   void (^apply)(void) = ^{
-    if ([view isKindOfClass:[JefiMailWebView class]]) ((JefiMailWebView *)view).jefiForwardsScroll = enabled;
+    if (![view isKindOfClass:[JefiMailWebView class]]) return;
+    JefiMailWebView *web = view;
+    web.jefiFits = fits;
+    if (reset) {
+      web.jefiAtTop = YES;
+      web.jefiAtBottom = NO;
+    }
   };
   if ([NSThread isMainThread]) apply();
   else dispatch_async(dispatch_get_main_queue(), apply);

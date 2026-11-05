@@ -1,7 +1,8 @@
-// Native check for scroll forwarding (JefiMailWebView in scripts/native/mail-snapshot.m): the app's
-// web view is the view AppKit sends scrolling to over a message, and with forwarding on it hands
-// vertical scrolling to the window's own view (GPUIX, which scrolls the reader). Horizontal
-// scrolling, and all scrolling with forwarding off, stays with the page.
+// Native check for scroll routing (JefiMailWebView in scripts/native/mail-snapshot.m): the app's web
+// view is the view AppKit sends scrolling to over a message, and it hands vertical gestures to the
+// window's own view (GPUIX, which scrolls the reader) when the message fits, when the page is cut off
+// by the reader's edge, or when the page is already at its edge in that direction; otherwise the page
+// scrolls. Horizontal gestures always stay with the page.
 //
 //   swiftc -O scripts/testing/mail-scroll-forward.swift -o tmp/mail-scroll-forward
 //   tmp/mail-scroll-forward build/native/libJefiMailSnapshot.dylib
@@ -19,7 +20,7 @@ guard CommandLine.arguments.count > 1, let library = dlopen(CommandLine.argument
   print("FAIL: couldn't load JefiMailWebView from the helper")
   exit(1)
 }
-typealias Forward = @convention(c) (UnsafeMutableRawPointer?, Bool) -> Void
+typealias Forward = @convention(c) (UnsafeMutableRawPointer?, Bool, Bool) -> Void
 let forward = unsafeBitCast(symbol, to: Forward.self)
 
 let app = NSApplication.shared
@@ -49,19 +50,26 @@ let pointer = Unmanaged.passUnretained(web).toOpaque()
 
 expect("AppKit sends scrolling over the message to the web view", host.hitTest(NSPoint(x: 250, y: 200)) === web)
 
-forward(pointer, true)
-host.scrolls = 0
-web.scrollWheel(with: wheel(dx: 0, dy: -40))
-expect("with the message fitted, vertical scrolling reaches the window's view", host.scrolls == 1)
+func routed(dx: Int32 = 0, dy: Int32) -> Bool {
+  host.scrolls = 0
+  web.scrollWheel(with: wheel(dx: dx, dy: dy))
+  return host.scrolls == 1
+}
 
-host.scrolls = 0
-web.scrollWheel(with: wheel(dx: -40, dy: 0))
-expect("horizontal scrolling stays with the page", host.scrolls == 0)
+forward(pointer, true, true)
+expect("a message that fits: scrolling either way moves the conversation", routed(dy: -40) && routed(dy: 40))
+expect("horizontal scrolling stays with the page", !routed(dx: -40, dy: 0))
 
-forward(pointer, false)
-host.scrolls = 0
-web.scrollWheel(with: wheel(dx: 0, dy: -40))
-expect("with forwarding off (a message too long to fit) the page keeps it", host.scrolls == 0)
+// A long message: the page scrolls inside, starting at its top.
+forward(pointer, false, true)
+expect("a long message at its top: scrolling down scrolls the page", !routed(dy: -40))
+expect("a long message at its top: scrolling up carries on into the conversation", routed(dy: 40))
+
+// The page partly outside the reader (the clipping view is the visible part): bring it into view first.
+clip.frame = NSRect(x: 50, y: 50, width: 400, height: 200)
+web.frame = NSRect(x: 0, y: -100, width: 400, height: 300)
+forward(pointer, false, true)
+expect("a page cut off by the reader's edge: scrolling moves the conversation", routed(dy: -40))
 
 print(failures.isEmpty ? "PASS mail-scroll-forward" : "FAILED: \(failures.joined(separator: "; "))")
 exit(failures.isEmpty ? 0 : 1)

@@ -1,7 +1,7 @@
 import { appendFileSync } from 'node:fs'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useSyncExternalStore, type RefObject } from 'react'
 import { useGpuix, useWindowSize, type PublicInstance } from '@gpuix/react'
-import { MAIL_CORNER_RADIUS, MIN_PAGE_HEIGHT, destroyMail, fullRenderingAvailable, hideMail, mailBackground, mailContentHeight, mailSnapshot, mailSnapshotRevision, maxPageHeight, place, setMailSnapshotImageReleaser, showMail, subscribeMailSnapshots, type MailTheme } from './native/mail-webview'
+import { MAIL_CORNER_RADIUS, MIN_PAGE_HEIGHT, destroyMail, fullRenderingAvailable, hideMail, mailBackground, mailContentHeight, mailSnapshot, mailSnapshotRevision, maxPageHeight, place, setMailFits, setMailSnapshotImageReleaser, showMail, subscribeMailSnapshots, type MailTheme } from './native/mail-webview'
 import type { LinkPosition } from './link-popover'
 import { htmlLinks } from './link-accessibility'
 import { LinkDestinationList, type LinkDisclosureContext } from './markdown'
@@ -127,14 +127,19 @@ function useNativeMailView(html: string, allowRemoteImages: boolean, theme: Mail
 
 export { maxPageHeight }
 
+/** Room left between the page and the reader's edges, so the page can be seen whole with its corners. */
+const AREA_MARGIN = 24
+
 /**
- * The page's height: as tall as the message once WebKit has measured it, so the whole message scrolls
- * with the conversation, its bottom corners included. `fallback` holds the place until then, and
+ * The page's height: as tall as the message once WebKit has measured it, but no taller than the
+ * reader's visible area (`area`), so the whole page, rounded corners and all, always fits on screen;
+ * a longer message scrolls inside it. `fallback` holds the place until the message is measured, and
  * stands in for good where the measuring helper isn't available.
  */
-export function pageHeight(measured: number | null, fallback: number, width: number | null) {
-  if (measured === null) return fallback
-  return Math.min(Math.max(measured, MIN_PAGE_HEIGHT), width ? maxPageHeight(width) : 8000)
+export function pageHeight(measured: number | null, fallback: number, width: number | null, area: number | null = null) {
+  const room = area ? Math.max(MIN_PAGE_HEIGHT, area - AREA_MARGIN) : Infinity
+  if (measured === null) return Math.min(fallback, room)
+  return Math.min(Math.max(measured, MIN_PAGE_HEIGHT), width ? maxPageHeight(width) : 8000, room)
 }
 
 export function FullHtml({ html, height, allowRemoteImages = false, theme, onLink, linkDisclosure }: { html: string; height: number; allowRemoteImages?: boolean; theme?: MailTheme; onLink: (url: string, position: LinkPosition) => void; linkDisclosure?: LinkDisclosureContext }) {
@@ -149,7 +154,12 @@ export function FullHtml({ html, height, allowRemoteImages = false, theme, onLin
   useSyncExternalStore(subscribeMailSnapshots, mailSnapshotRevision, mailSnapshotRevision)
   const snapshot = mailSnapshot(html, allowRemoteImages, theme)
   const width = ref.current ? renderer?.getElementBounds?.(ref.current.id)?.width ?? null : null
-  const shownHeight = pageHeight(mailContentHeight(html, allowRemoteImages, theme), height, width)
+  const area = clipRef?.current ? renderer?.getElementBounds?.(clipRef.current.id)?.height ?? null : null
+  const measured = mailContentHeight(html, allowRemoteImages, theme)
+  const shownHeight = pageHeight(measured, height, width, area)
+  // Whole message shown: scrolling over it moves the conversation. Otherwise the page scrolls too.
+  const fits = measured !== null && measured <= shownHeight
+  useEffect(() => setMailFits(fits), [fits, html])
 
   // Whether placement changed, which is what the poll's back-off counts.
   const hide = () => {

@@ -177,7 +177,7 @@ export function measureMailContentHeight(webView: Pointer | bigint, timeoutMs = 
 
 // Scroll forwarding (see JefiMailWebView in scripts/native/mail-snapshot.m), opened on its own too.
 const openForwardLibrary = (path: string) =>
-  dlopen(path, { jefi_mail_forward_scroll: { args: [FFIType.ptr, FFIType.bool], returns: FFIType.void } })
+  dlopen(path, { jefi_mail_forward_scroll: { args: [FFIType.ptr, FFIType.bool, FFIType.bool], returns: FFIType.void } })
 let forwardLibrary: ReturnType<typeof openForwardLibrary> | null | undefined
 
 function scrollForwardingLibrary() {
@@ -196,11 +196,14 @@ function scrollForwardingLibrary() {
  */
 export const mailWebViewClass = () => (scrollForwardingLibrary() ? 'JefiMailWebView' : 'WKWebView')
 
-/** Sends vertical scrolling over the web view to the conversation around it (`forward`), or leaves it to the page. */
-export function forwardMailScroll(webView: Pointer | bigint | null, forward: boolean) {
+/**
+ * Tells the web view whether its whole message fits (`fits`: scrolling over it then always moves the
+ * conversation); `reset` for a newly loaded message, which starts at its top.
+ */
+export function forwardMailScroll(webView: Pointer | bigint | null, fits: boolean, reset = false) {
   if (!webView) return
   try {
-    scrollForwardingLibrary()?.symbols.jefi_mail_forward_scroll(webView, forward)
+    scrollForwardingLibrary()?.symbols.jefi_mail_forward_scroll(webView, fits, reset)
   } catch {
     // The page then keeps the wheel, as before.
   }
