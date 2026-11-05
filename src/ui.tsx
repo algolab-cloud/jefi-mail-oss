@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react'
+import { useWindowSize } from '@gpuix/react'
 import { FONT, mixHex, THEMES, useSettings } from './theme'
 import { Icon, type IconName } from './icons'
 import { useOverlay } from './overlays'
@@ -7,7 +8,13 @@ import { useOverlay } from './overlays'
 // Menus
 // ---------------------------------------------------------------------------
 
-/** A popover anchored to its parent element. Clicking outside closes it. */
+/** Room a menu leaves at the window's edges. */
+const MENU_MARGIN = 12
+
+/** The tallest a menu may be: what the window holds, so a long one (many labels) scrolls instead of running off it. */
+export const menuMaxHeight = (windowHeight: number) => Math.max(120, windowHeight - MENU_MARGIN * 2)
+
+/** A popover anchored to its parent element. Clicking outside closes it; a long one scrolls. */
 export function Menu({
   open,
   onClose,
@@ -29,6 +36,7 @@ export function Menu({
   testId?: string
 }) {
   const { C } = useSettings()
+  const { height: windowHeight } = useWindowSize()
   useOverlay(open)
   if (!open) return null
   return (
@@ -38,6 +46,7 @@ export function Menu({
         onMouseDownOutside={onClose}
         style={{
           width,
+          maxHeight: menuMaxHeight(windowHeight),
           borderRadius: 12,
           backgroundColor: C.raised,
           borderWidth: 1,
@@ -48,7 +57,9 @@ export function Menu({
           flexDirection: 'column',
         }}
       >
-        {children}
+        <div testId={testId ? `${testId}-scroll` : undefined} style={{ flexShrink: 1, minHeight: 0, overflowY: 'scroll', display: 'flex', flexDirection: 'column' }}>
+          {children}
+        </div>
       </div>
     </anchored>
   )
