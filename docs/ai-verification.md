@@ -13,7 +13,7 @@ These steps need your own key or Codex login. Each takes a few minutes, and the 
 1. Create a key at console.anthropic.com > API keys.
 2. In Settings > AI, choose **Claude**, paste the key, and press **Save key**. You should see "Key saved to your Keychain", and **Use AI features** turns on.
 3. In Keychain Access, look for the service `app.jefi.ai`, account `anthropic`.
-4. Model: leave it on **Default · claude-sonnet-5**. Open the menu and check that the list loads from your key.
+4. Model: leave it on **Default · claude-sonnet-5-5**. Open the menu and check that the list loads from your key.
 5. Open a conversation and click the sparkles button in the reader toolbar ("Summarize with Claude"). The summary should appear as it is written. Then try:
    - the sparkles button in the reply box ("Draft a reply with Claude")
    - the sparkles button in a new email's toolbar ("Write with Claude"), and one rewrite option from the same menu

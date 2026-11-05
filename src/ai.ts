@@ -18,9 +18,9 @@ import { keychain } from './keychain'
 const KEY_SERVICE = 'app.jefi.ai'
 const ANTHROPIC_KEY_NAME = 'anthropic'
 const OPENAI_KEY_NAME = 'openai'
-// Summaries and drafts are short and frequent: Sonnet 5 writes them well at a fraction of Opus's
-// price. Anyone who wants Opus picks it under Settings > AI > Model.
-export const ANTHROPIC_MODEL = 'claude-sonnet-5'
+// Summaries and drafts are short and frequent: Sonnet 5.5 writes them well at half of Opus's price.
+// Anyone who wants Opus picks it under Settings > AI > Model.
+export const ANTHROPIC_MODEL = 'claude-sonnet-5-5'
 export const OPENAI_MODEL = 'gpt-5.4-mini'
 
 
@@ -51,8 +51,9 @@ export function aiConnection(settings: AiSettings, keys: { anthropic: string | n
 export type ModelOption = { id: string; label: string; description?: string }
 
 /** Only some Claude models take `effort` (Haiku 4.5 and Sonnet 4.5 reject it) or the refusal fallback. */
-const CLAUDE_EFFORT = /^claude-(opus-(4-[5-9]|5)|sonnet-(4-6|5)|fable|mythos)/
-const CLAUDE_FALLBACK = /^claude-(opus-5|fable-5)/
+const CLAUDE_EFFORT = /^claude-(opus-(4-[5-9]|5)|sonnet-(4-6|5)|haiku-5|fable|mythos)/
+// Sonnet 5 and Haiku have no server-side fallback; Sonnet 5.5 has only the "default" form used here.
+const CLAUDE_FALLBACK = /^claude-(opus-5|sonnet-5-5|fable-5)/
 /** Only reasoning models take `reasoning.effort`. */
 const OPENAI_REASONING = /^(gpt-5|gpt-6|o\d)/
 
@@ -233,7 +234,7 @@ async function runClaude(key: string, model: string, prompt: string, effort: 'lo
     {
       model,
       max_tokens: 8000,
-      // Opus 5 / Fable: if the model declines, the API re-runs the request on Anthropic's recommended fallback.
+      // Sonnet 5.5, Opus 5 and later, Fable: if the model declines, the API re-runs the request on Anthropic's recommended fallback.
       ...claudeModelOptions(model, effort),
       system: SYSTEM,
       messages: [{ role: 'user', content: prompt }],

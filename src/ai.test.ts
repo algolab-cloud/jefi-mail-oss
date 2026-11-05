@@ -113,8 +113,12 @@ test('nothing can be sent while AI is switched off, even with a key saved or Cod
 })
 
 test('the default Claude model is a current official id', () => {
-  expect(ANTHROPIC_MODEL).toBe('claude-sonnet-5')
-  expect(claudeModelOptions(ANTHROPIC_MODEL, 'low')).toEqual({ output_config: { effort: 'low' } })
+  expect(ANTHROPIC_MODEL).toBe('claude-sonnet-5-5')
+  const fallback = { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' as const }
+  expect(claudeModelOptions(ANTHROPIC_MODEL, 'low')).toEqual({ ...fallback, output_config: { effort: 'low' } })
+  expect(claudeModelOptions('claude-opus-5-5', 'medium')).toEqual({ ...fallback, output_config: { effort: 'medium' } })
+  expect(claudeModelOptions('claude-sonnet-5', 'low')).toEqual({ output_config: { effort: 'low' } })
+  expect(claudeModelOptions('claude-haiku-5-5', 'low')).toEqual({ output_config: { effort: 'low' } })
   expect(claudeModelOptions('claude-haiku-4-5-20251001', 'low')).toEqual({})
 })
 
