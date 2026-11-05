@@ -26,20 +26,31 @@ let forward = unsafeBitCast(symbol, to: Forward.self)
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 500), styleMask: [.borderless], backing: .buffered, defer: false)
-let host = Host(frame: NSRect(x: 0, y: 0, width: 600, height: 500))
-window.contentView = host
-// As in mail-webview.ts: a clipping view on the window's view, the web view inside it.
+// As in the app: the window's content view holds GPUIX's view and, beside it on top, the clipping view
+// mail-webview.ts adds, with the web view inside. (Forwarding to the content view itself, which does
+// nothing with scrolling, is how the first version of this left the reader unscrollable.)
+let content = NSView(frame: NSRect(x: 0, y: 0, width: 600, height: 500))
+window.contentView = content
+let host = Host(frame: content.bounds)
+content.addSubview(host)
 let clip = NSView(frame: NSRect(x: 50, y: 50, width: 400, height: 300))
 let web = webClass.init(frame: clip.bounds, configuration: WKWebViewConfiguration())
 clip.addSubview(web)
-host.addSubview(clip)
+content.addSubview(clip)
 web.loadHTMLString("<p>Short message</p>", baseURL: nil)
 window.orderFrontRegardless()
 let until = Date().addingTimeInterval(1)
 while Date() < until { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
 
+/** A scroll over the middle of the page, located as a real one is: the reader view is found under it. */
 func wheel(dx: Int32, dy: Int32) -> NSEvent {
-  NSEvent(cgEvent: CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0)!)!
+  let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0)!
+  // Without a window, AppKit reads the location as a screen point with a bottom-left origin; the
+  // window sits at the screen's origin, so this is (250, 200) in it, over the page.
+  let screenHeight = NSScreen.screens.first?.frame.height ?? 0
+  let origin = window.frame.origin
+  cg.location = CGPoint(x: origin.x + 250, y: screenHeight - (origin.y + 200))
+  return NSEvent(cgEvent: cg)!
 }
 var failures: [String] = []
 func expect(_ name: String, _ ok: Bool) {
@@ -48,7 +59,7 @@ func expect(_ name: String, _ ok: Bool) {
 }
 let pointer = Unmanaged.passUnretained(web).toOpaque()
 
-expect("AppKit sends scrolling over the message to the web view", host.hitTest(NSPoint(x: 250, y: 200)) === web)
+expect("AppKit sends scrolling over the message to the web view", content.hitTest(NSPoint(x: 250, y: 200)) === web)
 
 func routed(dx: Int32 = 0, dy: Int32) -> Bool {
   host.scrolls = 0

@@ -176,7 +176,7 @@ __attribute__((visibility("default"))) void jefi_mail_content_height(
 // Scrolling. The app's web view is this subclass, sitting in a clipping view on the window's own
 // view (GPUIX). The page is at most as tall as the reader, so it can always be seen whole; WebKit
 // keeps the wheel over it even when the page has nothing to scroll, so each gesture is routed here
-// as it starts: to the reader (two views up, which scrolls the conversation under the pointer) or
+// as it starts: to the reader (GPUIX's view under the pointer, which scrolls the conversation) or
 // to the page. Vertical gestures go to the reader when
 //   - the whole message fits (the page has nothing to scroll),
 //   - the page is cut off by the reader's edge (bring it whole into view first), or
@@ -216,6 +216,23 @@ static NSString *const JefiMailEdgesScript =
   }];
 }
 
+/**
+ * The view under the pointer if this page weren't there: GPUIX's own view, a sibling of the clipping
+ * view in the window's content view (or the content view itself), which scrolls the reader there.
+ */
+- (NSView *)jefiReaderViewFor:(NSEvent *)event {
+  NSView *clip = self.superview;
+  NSView *host = clip.superview;
+  if (!host) return nil;
+  NSPoint point = [host convertPoint:event.locationInWindow fromView:nil];
+  for (NSView *view in host.subviews.reverseObjectEnumerator) {
+    if (view == clip || view.isHidden) continue;
+    NSView *hit = [view hitTest:point];
+    if (hit) return hit;
+  }
+  return host;
+}
+
 - (void)scrollWheel:(NSEvent *)event {
   BOOL wheel = event.phase == NSEventPhaseNone && event.momentumPhase == NSEventPhaseNone;
   BOOL starts = wheel || event.phase == NSEventPhaseBegan || event.phase == NSEventPhaseMayBegin;
@@ -226,8 +243,8 @@ static NSString *const JefiMailEdgesScript =
     BOOL pastEdge = (dy > 0 && self.jefiAtTop) || (dy < 0 && self.jefiAtBottom);
     _gestureToReader = vertical && (self.jefiFits || [self jefiCutOff] || pastEdge);
   }
-  NSView *reader = self.superview.superview;
-  if (_gestureToReader && reader) {
+  NSView *reader = _gestureToReader ? [self jefiReaderViewFor:event] : nil;
+  if (reader) {
     [reader scrollWheel:event];
     return;
   }
