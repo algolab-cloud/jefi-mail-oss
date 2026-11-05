@@ -78,6 +78,25 @@ test('Anthropic gets the all-accounts tool only when it is provided', async () =
   expect(sent.map((s) => names(s.body.tools as Array<{ name: string }>).includes('list_unread_all_accounts'))).toEqual([true, false])
 })
 
+test('what is on screen goes into each new message, so earlier requests are never rewritten', async () => {
+  fakeFetch(anthropicDone)
+  const history: Parameters<typeof runAssistant>[2] = [{ role: 'user', content: 'Catch me up' }]
+  await runAssistant('key', undefined, history, 'On screen: Inbox', base, () => {})
+  history.push({ role: 'user', content: 'And Work?' })
+  await runAssistant('key', undefined, history, 'On screen: Work', base, () => {})
+  const [first, second] = sent.map((s) => s.body as { system: unknown; messages: unknown[] })
+  // Newer Claude models reject a conversation whose system prompt or earlier turns changed.
+  expect(second!.system).toEqual(first!.system)
+  expect(second!.messages.slice(0, first!.messages.length)).toEqual(first!.messages)
+  expect(second!.messages.at(-1)).toEqual({
+    role: 'user',
+    content: [
+      { type: 'text', text: '<app_context>\nOn screen: Work\n</app_context>' },
+      { type: 'text', text: 'And Work?' },
+    ],
+  })
+})
+
 test('OpenAI gets the all-accounts tool only when it is provided', async () => {
   fakeFetch(openAIDone)
   await runAssistantOpenAI('key', undefined, [{ role: 'user', content: 'Catch me up' }], 'ctx', withAll, () => {})

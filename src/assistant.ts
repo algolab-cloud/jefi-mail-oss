@@ -199,18 +199,16 @@ export async function runAssistant(
   signal?: AbortSignal,
 ) {
   const client = new Anthropic({ apiKey: key })
+  withContext(history, context)
   for (let step = 0; step < MAX_STEPS; step++) {
     const stream = client.beta.messages.stream(
       {
         model: model || ANTHROPIC_MODEL,
         max_tokens: 16000,
-        // Opus 5 / Fable: if the model declines, the API re-runs the request on Anthropic's recommended fallback.
+        // Sonnet 5.5, Opus 5 and later, Fable: if the model declines, the API re-runs the request on Anthropic's recommended fallback.
         ...claudeModelOptions(model || ANTHROPIC_MODEL, 'medium'),
-        // What's on screen right now, as a second system block so the stable instructions stay cacheable.
-        system: [
-          { type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } },
-          { type: 'text', text: context },
-        ],
+        // The same on every request, so the conversation stays cacheable and its thinking stays valid.
+        system: [{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } }],
         tools: toolsFor(tools),
         messages: history,
       },
@@ -234,6 +232,21 @@ export async function runAssistant(
     history.push({ role: 'user', content: results })
   }
   throw new Error('Stopped after too many steps. Try a smaller request')
+}
+
+/**
+ * Puts what's on screen into the person's newest message, before it is first sent. It changes from
+ * one request to the next, and newer Claude models (Sonnet 5.5, Opus 5.5, Fable 5.1) reject a
+ * conversation whose system prompt or earlier turns changed after they thought about it: the history
+ * has to only ever grow.
+ */
+export function withContext(history: Anthropic.Beta.BetaMessageParam[], context: string) {
+  const latest = history[history.length - 1]
+  if (latest?.role !== 'user' || typeof latest.content !== 'string') return
+  latest.content = [
+    { type: 'text', text: `<app_context>\n${context}\n</app_context>` },
+    { type: 'text', text: latest.content },
+  ]
 }
 
 /** The tool definitions the app provides implementations for (list_unread_all_accounts is optional). */
