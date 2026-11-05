@@ -45,6 +45,7 @@ import { JefiMark } from './brand'
 import { Button } from './ui'
 import { AssistantPanel } from './assistant-panel'
 import { onHandoff } from './assistant-handoff'
+import { copySelectionOnKey } from './copy-selection'
 import { PaneResizer } from './resizer'
 import { resolveNotificationThread } from './notification-routing'
 import { useStableCallback } from './stable-callback'
@@ -1069,6 +1070,7 @@ if (isEntryPoint) {
         else renderer.focusNext?.()
         return
       }
+      if (copySelectionOnKey(event, renderer)) return
       dispatchKey(event, { typing: renderer.getFocusedElementId?.() != null })
     },
     title: APP_NAME,
