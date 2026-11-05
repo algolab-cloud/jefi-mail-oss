@@ -7,7 +7,9 @@
     "jsxImportSource": "@gpuix/react",
     "strict": true,
     "skipLibCheck": true,
-    "noEmit": true
+    "noEmit": true,
+    // TypeScript 6+ no longer loads every @types package by default.
+    "types": ["bun", "node"]
   },
   "include": ["src"]
 }
