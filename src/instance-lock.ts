@@ -43,7 +43,8 @@ export function claimInstance(path: string, me: LockHolder, probe: LockProbe): C
   }
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const fd = openSync(path, 'wx')
+      // Created afresh (never through a link someone left there) and readable only by this user.
+      const fd = openSync(path, 'wx', 0o600)
       try {
         writeSync(fd, JSON.stringify(me))
       } finally {
@@ -130,7 +131,7 @@ export const realProbe: LockProbe = {
  */
 export function lockMailbox(dir: string, options: { checkUnlocked?: boolean } = {}): { release: () => void } | null {
   try {
-    mkdirSync(dir, { recursive: true })
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
   } catch {}
   const me: LockHolder = { pid: process.pid, app: bundleOf(process.execPath) ?? process.execPath, startedAt: Date.now() }
   let claim = holdInstance(`${dir}/app.lock`, me, realProbe)
