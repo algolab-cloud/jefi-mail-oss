@@ -1,13 +1,15 @@
 # Changelog
 
-## 0.9.1 — 2026-11-05
+## 0.10.0 — 2026-11-08
 
-- HTML mail is shown at its full height, so the conversation scrolls as one: nothing is cut off under the reply box, and scrolling over a message moves the conversation.
-- Plain HTML mail follows the theme, so it reads light on a dark card in dark mode. Mail with its own design keeps its look.
-- The AI summary header no longer overlaps the text, and a summary can be copied or taken to the assistant. The assistant uses Claude Sonnet 5.5.
-- ⌘C copies selected text. Long menus, such as labels, fit the window and scroll. Toolbar tooltips no longer flicker.
+- Smart clean-up: your AI sorts Inbox senders into junk, not sure and important, keeps the messages in junk worth keeping (codes, receipts, deliveries), and finds real mail in Spam. It can also run daily or weekly, with its own AI model.
+- Settings has its own menu with sections and a search box.
+- Rules show how many conversations they match as you edit them.
+- Two copies of Jefi no longer fight over the same mailbox, which fixes "database is locked" errors. Changes to lots of Gmail mail go through many times faster.
+- HTML mail is shown at its full height and plain HTML mail follows the theme. AI summaries can be copied or taken to the assistant, which uses Claude Sonnet 5.5.
+- ⌘C copies selected text. Long menus fit the window and scroll. Toolbar tooltips no longer flicker.
 
-[Full release notes](docs/releases/0.9.1.md)
+[Full release notes](docs/releases/0.10.0.md)
 
 ## 0.9.0 — 2026-11-03
 
