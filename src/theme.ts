@@ -241,6 +241,18 @@ export type Settings = {
   remoteImages: RemoteImagePolicy
   /** Senders whose remote images load without asking, lower-cased. */
   remoteImageSenders: string[]
+  /** Senders the person told the smart clean-up to keep, lower-cased: never offered as junk again. */
+  cleanupKeepSenders: string[]
+  /** The model each provider uses to sort senders for clean-up; empty means the main model (aiModels). */
+  cleanupModels: { anthropic: string; openai: string; codex: string }
+  /** How often the smart clean-up runs on its own while Jefi is open. */
+  cleanupSchedule: CleanupSchedule
+  /** What a scheduled run does with junk: only sort it for review, archive it, or move it to Trash. */
+  cleanupAction: CleanupAction
+  /** When a scheduled (or "Run now") clean-up last started (ms); 0 if never. */
+  cleanupLastRunAt: number
+  /** What that run did, in words, for Settings. */
+  cleanupLastSummary: string
   /** Exact destination hosts the user has chosen to trust for email links. */
   trustedLinkDomains: string[]
   /** Download and use the optional public phishing list for link review. */
@@ -256,6 +268,9 @@ export type Settings = {
 }
 
 export type MenuBarTitleMode = 'none' | 'unread' | 'next'
+
+export type CleanupSchedule = 'off' | 'daily' | 'weekly'
+export type CleanupAction = 'review' | 'archive' | 'trash'
 
 export type RemoteImagePolicy = 'ask' | 'always'
 
@@ -315,6 +330,12 @@ export const DEFAULT_SETTINGS: Settings = {
   signInUserAgent: { family: 'safari', platform: 'mac', custom: '', os: '', webkit: '', browser: '', suffix: '' },
   remoteImages: 'ask',
   remoteImageSenders: [],
+  cleanupKeepSenders: [],
+  cleanupModels: { anthropic: '', openai: '', codex: '' },
+  cleanupSchedule: 'off',
+  cleanupAction: 'review',
+  cleanupLastRunAt: 0,
+  cleanupLastSummary: '',
   trustedLinkDomains: [],
   phishingListEnabled: false,
   menuBar: true,
@@ -412,6 +433,12 @@ export function loadSettings(): Settings {
       },
       aiModels: strings(raw.aiModels, d.aiModels),
       remoteImageSenders: (Array.isArray(raw.remoteImageSenders) ? raw.remoteImageSenders : []).map((email) => String(email).trim().toLowerCase()),
+      cleanupKeepSenders: [...new Set((Array.isArray(raw.cleanupKeepSenders) ? raw.cleanupKeepSenders : []).flatMap((email) => (typeof email === 'string' && email.trim() ? [email.trim().toLowerCase()] : [])))],
+      cleanupModels: strings(raw.cleanupModels, d.cleanupModels),
+      cleanupSchedule: oneOf(raw.cleanupSchedule, ['off', 'daily', 'weekly'] as const, d.cleanupSchedule),
+      cleanupAction: oneOf(raw.cleanupAction, ['review', 'archive', 'trash'] as const, d.cleanupAction),
+      cleanupLastRunAt: typeof raw.cleanupLastRunAt === 'number' && Number.isFinite(raw.cleanupLastRunAt) ? raw.cleanupLastRunAt : 0,
+      cleanupLastSummary: text(raw.cleanupLastSummary, d.cleanupLastSummary),
       trustedLinkDomains: trustedLinkDomains(raw.trustedLinkDomains),
       phishingListEnabled: raw.phishingListEnabled === true,
       defaultAlert: alertSetting(raw.defaultAlert, DEFAULT_SETTINGS.defaultAlert),

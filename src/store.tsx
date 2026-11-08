@@ -9,9 +9,9 @@ import { copySignInCode, freshCode } from './sign-in-pill'
 import { setContacts } from './contacts'
 import { toast } from './toast'
 import { useSettings } from './theme'
-import type { ScrubGroup, ScrubGroupBy, ScrubStats } from './engine/scrub'
-import type { MailRule } from './engine/rules'
-import type { UnreadThread } from './engine/types'
+import type { ScrubGroup, ScrubGroupBy, ScrubStats, SenderProfile, ThreadPeek } from './engine/scrub'
+import type { MailRule, RuleMatchCount } from './engine/rules'
+import type { ScrubMove, UnreadThread } from './engine/types'
 import { snoozeLabel } from './engine/snooze'
 import { inboxUnreadCount, unreadBasis, type UnreadBasis } from './unread-count'
 import { sidebarCounts, type SidebarCounts } from './sidebar-counts'
@@ -145,13 +145,26 @@ type MailStore = {
   saveRule: (rule: MailRule) => Promise<MailRule[] | null>
   deleteRule: (id: string) => Promise<MailRule[]>
   runRule: (rule: MailRule) => Promise<void>
+  /** How many Inbox conversations these conditions cover right now. */
+  countRuleMatches: (match: MailRule['match']) => Promise<RuleMatchCount>
   ruleDraft: MailRule | null
   startRule: (draft: Partial<MailRule> | null) => void
   /** Mailbox clean-up (Scrub): a report, a move with Undo, and leaving mailing lists. */
   scrubReport: (by: ScrubGroupBy) => Promise<ScrubGroup[]>
   scrubStats: () => Promise<ScrubStats | null>
+  /** Inbox senders for the smart clean-up; the active account unless another is named. */
+  senderProfiles: (accountId?: string) => Promise<SenderProfile[]>
   /** Bulk clean-up. 'purge' erases on the server and can't be undone; the other two can. */
-  scrub: (group: ScrubGroup, action: 'archive' | 'trash' | 'purge', keepLatest: number) => Promise<number>
+  /** `except`: conversations to leave where they are (ones the smart clean-up found worth keeping). */
+  scrub: (group: ScrubGroup, action: 'archive' | 'trash' | 'purge', keepLatest: number, except?: string[]) => Promise<number>
+  /** The newest conversations from these senders, for the smart clean-up's closer look. */
+  senderThreads: (senders: string[], accountId?: string) => Promise<ThreadPeek[]>
+  /** The newest conversations in Spam. */
+  spamThreads: (accountId?: string) => Promise<ThreadPeek[]>
+  /** Moves conversations out of Spam into the Inbox, behind one toast and one Undo. */
+  notSpam: (threads: Array<Pick<ThreadPeek, 'threadId' | 'subject'>>, accountId?: string) => void
+  /** Archive or trash several senders at once, behind one toast and one Undo. Returns conversations moved. */
+  scrubAll: (groups: ScrubGroup[], action: 'archive' | 'trash', keepLatest: number, options?: { accountId?: string; title?: string; except?: string[] }) => Promise<number>
   unsubscribe: (group: Pick<ScrubGroup, 'detail' | 'label'>) => Promise<boolean>
   /** One action over several conversations, with a single toast (and Undo, for moves). */
   bulk: (ids: string[], action: BulkAction) => void
@@ -1135,9 +1148,9 @@ export function MailProvider({ children }: { children: ReactNode }) {
     })
   }
 
-  const scrub: MailStore['scrub'] = async (group, action, keepLatest) => {
+  const scrub: MailStore['scrub'] = async (group, action, keepLatest, except) => {
     const accountId = account.id
-    const moves = await engine.scrub(accountId, group.selector, action, keepLatest)
+    const moves = await engine.scrub(accountId, group.selector, action, keepLatest, except)
     // Purging returns nothing to undo, so the count comes from what the report said was there.
     if (action === 'purge') {
       toast(`Deleting ${group.messages.toLocaleString()} messages from the server`, { description: group.label })
@@ -1153,6 +1166,33 @@ export function MailProvider({ children }: { children: ReactNode }) {
       action: { label: 'Undo', onClick: () => engine.unscrub(accountId, moves) },
     })
     return moves.length
+  }
+
+  const scrubAll: MailStore['scrubAll'] = async (groups, action, keepLatest, options = {}) => {
+    const accountId = options.accountId ?? account.id
+    const moves: ScrubMove[] = []
+    // One after another: each is a single local transaction, and the queue syncs them together.
+    for (const group of groups) moves.push(...(await engine.scrub(accountId, group.selector, action, 'sender' in group.selector ? keepLatest : 0, options.except)))
+    if (!moves.length) {
+      toast('Nothing to clean up')
+      return 0
+    }
+    const count = moves.length === 1 ? '1 conversation' : `${moves.length.toLocaleString()} conversations`
+    const from = groups.length === 1 ? groups[0]!.label : `From ${groups.length.toLocaleString()} senders`
+    toast(`${action === 'trash' ? 'Moved to Trash' : 'Archived'}: ${count}`, {
+      description: options.title ? `${options.title} · ${from}` : from,
+      action: { label: 'Undo', onClick: () => engine.unscrub(accountId, moves) },
+    })
+    return moves.length
+  }
+
+  const notSpam: MailStore['notSpam'] = (threads, accountId = account.id) => {
+    if (!threads.length) return
+    for (const thread of threads) engine.move(accountId, thread.threadId, 'inbox')
+    toast(threads.length === 1 ? 'Moved to Inbox' : `Moved to Inbox: ${threads.length.toLocaleString()} conversations`, {
+      description: threads.length === 1 ? quote(threads[0]!.subject) : 'Out of Spam',
+      action: { label: 'Undo', onClick: () => threads.forEach((thread) => engine.move(accountId, thread.threadId, 'spam')) },
+    })
   }
 
   const unsubscribe: MailStore['unsubscribe'] = async (group) => {
@@ -1301,8 +1341,16 @@ export function MailProvider({ children }: { children: ReactNode }) {
       toast('Rule deleted')
       return rules
     },
+    countRuleMatches: (match) => engine.countRuleMatches(account.id, match),
     runRule: async (rule) => {
-      const count = await engine.runRule(account.id, rule.id)
+      let count: number
+      try {
+        count = await engine.runRule(account.id, rule.id)
+      } catch (err) {
+        // Nothing was changed (a run is all or nothing), so it can just be tried again.
+        toast.error(`Couldn't run ${rule.name}`, { description: `${err instanceof Error ? err.message : String(err)}. Nothing was moved; try again.` })
+        return
+      }
       if (count) toast('Rule applied', { description: `${rule.name} · ${count === 1 ? '1 conversation' : `${count} conversations`}` })
       else toast('Nothing matches in the Inbox', { description: rule.name })
     },
@@ -1311,7 +1359,12 @@ export function MailProvider({ children }: { children: ReactNode }) {
     startRule: (draft) => setRuleDraftFor(draft ? { accountId: account.id, rule: ruleDraftFrom(draft) } : null),
     scrubReport: (by) => engine.scrubReport(account.id, by),
     scrubStats: () => engine.scrubStats(account.id),
+    senderProfiles: (accountId) => engine.senderProfiles(accountId ?? account.id),
+    senderThreads: (senders, accountId) => engine.senderThreads(accountId ?? account.id, senders),
+    spamThreads: (accountId) => engine.spamThreads(accountId ?? account.id),
+    notSpam,
     scrub,
+    scrubAll,
     unsubscribe,
     bulk,
     accounts,

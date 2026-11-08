@@ -34,7 +34,7 @@ routes. Unknown routes open Jefi and do nothing else. Query values are URL-encod
 | `jefi://quick-add?text=` | Event editor prefilled from a sentence ("Lunch with Nora Friday 1pm", src/detect/dates.ts) |
 | `jefi://notes` · `jefi://note/<noteId>` | Notes, or that note |
 | `jefi://new-note?title=&body=` | A new note, prefilled |
-| `jefi://settings` · `jefi://settings/<section>` | Settings, scrolled to `appearance`, `mailbox`, `privacy`, `accounts`, `ai`, `signin`, `calendar`, `tasks`, `sync`, `menubar`, `integrations` or `about` |
+| `jefi://settings` · `jefi://settings/<section>` | Settings, on the page that holds `appearance`, `menubar`, `sync`, `keyboard`, `accounts`, `signin`, `mailbox`, `privacy`, `cleanup`, `ai`, `calendar`, `tasks`, `integrations` or `about`; without a section, the page last open |
 
 ## 2. The `jefi` CLI
 

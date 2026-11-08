@@ -8,19 +8,9 @@ import { addDays } from './calendar/dates'
 // navigates or prefills. Nothing here sends, saves or deletes; the person does that.
 // ---------------------------------------------------------------------------
 
-/** The settings page's sections, in the order it shows them (settings.tsx builds the page from this). */
-export const SETTINGS_SECTIONS = ['appearance', 'mailbox', 'privacy', 'accounts', 'ai', 'signin', 'calendar', 'tasks', 'sync', 'menubar', 'integrations', 'about'] as const
+/** The parts of Settings a link can open (jefi://settings/<section>); settings-pages.ts says which page shows each. */
+export const SETTINGS_SECTIONS = ['appearance', 'mailbox', 'privacy', 'accounts', 'ai', 'signin', 'calendar', 'tasks', 'sync', 'menubar', 'integrations', 'keyboard', 'cleanup', 'about'] as const
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]
-
-export const settingsSectionIndex = (section: SettingsSection) => Math.max(0, SETTINGS_SECTIONS.indexOf(section))
-
-/** The sections the settings page mounts first: from the top, or around one it was asked to show. */
-export function settingsSectionWindow(section?: SettingsSection) {
-  if (!section) return { start: 0, end: 4 }
-  const index = settingsSectionIndex(section)
-  // Enough below it to fill a tall window before the list reports what it shows.
-  return { start: Math.max(0, index - 1), end: Math.min(SETTINGS_SECTIONS.length, index + 5) }
-}
 
 const CALENDAR_VIEWS: readonly CalendarView[] = ['day', 'week', 'month', 'agenda']
 

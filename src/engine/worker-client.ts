@@ -1,5 +1,5 @@
-import type { ScrubGroup, ScrubStats } from './scrub'
-import type { MailRule } from './rules'
+import type { ScrubGroup, ScrubStats, SenderProfile, ThreadPeek } from './scrub'
+import type { MailRule, RuleMatchCount } from './rules'
 import type { Account } from '../accounts'
 import type { EngineMethod, FromWorker, ToWorker } from './protocol'
 import type { ConnectionReport } from './connection'
@@ -109,11 +109,15 @@ export function createWorkerEngine(options: { env?: Record<string, string> } = {
     listRules: (accountId) => call<MailRule[]>('listRules', accountId).catch(() => []),
     saveRule: (accountId, rule) => call<MailRule[]>('saveRule', accountId, rule),
     deleteRule: (accountId, id) => call<MailRule[]>('deleteRule', accountId, id).catch(() => []),
-    runRule: (accountId, id) => call<number>('runRule', accountId, id).catch(() => 0),
+    runRule: (accountId, id) => call<number>('runRule', accountId, id),
+    countRuleMatches: (accountId, match) => call<RuleMatchCount>('countRuleMatches', accountId, match),
     search: (accountId, query) => call<MailThread[]>('search', accountId, query).catch(() => []),
     scrubStats: (accountId) => call<ScrubStats | null>('scrubStats', accountId).catch(() => null),
     scrubReport: (accountId, by) => call<ScrubGroup[]>('scrubReport', accountId, by).catch(() => []),
-    scrub: (accountId, selector, folder, keepLatest) => call<ScrubMove[]>('scrub', accountId, selector, folder, keepLatest).catch(() => []),
+    senderProfiles: (accountId) => call<SenderProfile[]>('senderProfiles', accountId),
+    senderThreads: (accountId, senders) => call<ThreadPeek[]>('senderThreads', accountId, senders),
+    spamThreads: (accountId) => call<ThreadPeek[]>('spamThreads', accountId),
+    scrub: (accountId, selector, folder, keepLatest, except) => call<ScrubMove[]>('scrub', accountId, selector, folder, keepLatest, except).catch(() => []),
     unscrub: (accountId, moves) => void call('unscrub', accountId, moves).catch(() => {}),
     unsubscribe: (accountId, sender) =>
       call<{ ok: true; done: boolean; mailto?: string; link?: string } | { ok: false; error: string }>('unsubscribe', accountId, sender).catch(() => ({ ok: false as const, error: 'Jefi stopped responding' })),

@@ -94,3 +94,64 @@ test('unsubscribe headers parse into one-click, link and mailto', () => {
   })
   expect(parseUnsubscribe('<https://x.example/u>', false).oneClick).toBeNull()
 })
+
+test('sender profiles cover Inbox senders, with who the person writes to and their recent subjects', async () => {
+  const deals = (n: number, day: number) =>
+    ({ raw: rawMessage({ n, fromName: 'Deals', fromEmail: 'news@deals.example', subject: `Sale ${n}`, date: new Date(Date.UTC(2026, 0, day)), extraHeaders: UNSUB }) })
+  const sent = rawMessage({ n: 9, fromName: 'Me', fromEmail: USER.user, subject: 'Re: Hi' }).replace('To: Me <me@example.com>', 'To: Friend <friend@example.com>')
+  const server = await startImapServer({
+    INBOX: [deals(1, 1), deals(2, 2), deals(3, 3), { raw: rawMessage({ n: 4, fromName: 'Friend', fromEmail: 'friend@example.com', subject: 'Hi' }) }],
+    Archive: { 'special-use': '\\Archive', messages: [{ raw: rawMessage({ n: 5, fromEmail: 'old@archive.example', subject: 'Long ago' }) }] },
+    Sent: { 'special-use': '\\Sent', messages: [{ raw: sent }] },
+    Trash: { 'special-use': '\\Trash', messages: [] },
+  })
+  const db = openDatabase(':memory:')
+  const engine = createImapEngine({ database: () => db, secrets: { get: async () => USER.pass, set: async () => {}, delete: async () => {} }, wake: false, watch: false })
+  const events: EngineEvent[] = []
+  engine.subscribe((batch) => events.push(...batch))
+  cleanups.push(() => server.close(), () => db.close(), () => engine.dispose())
+  engine.setAccounts([server.account])
+  engine.syncNow(server.account.id, true)
+  for (let i = 0; i < 200 && !events.some((e) => e.type === 'syncState' && e.state.status === 'idle'); i++) await Bun.sleep(20)
+
+  const profiles = await engine.senderProfiles(server.account.id)
+  // Only senders with mail in the Inbox, busiest first; the archived-only sender and the person themselves are left out.
+  expect(profiles.map((p) => p.detail)).toEqual(['news@deals.example', 'friend@example.com'])
+  const [news, friend] = profiles
+  expect(news).toMatchObject({ messages: 3, canUnsubscribe: true, bulk: true, wrote: 0, subjects: ['Sale 3', 'Sale 2', 'Sale 1'] })
+  expect(friend).toMatchObject({ messages: 1, canUnsubscribe: false, bulk: false, wrote: 1, subjects: ['Hi'] })
+})
+
+test('sender and Spam conversations are listed newest first, and a scrub leaves the kept ones alone', async () => {
+  const deals = (n: number, day: number) =>
+    ({ raw: rawMessage({ n, fromName: 'Deals', fromEmail: 'news@deals.example', subject: `Sale ${n}`, date: new Date(Date.UTC(2026, 0, day)), extraHeaders: UNSUB }) })
+  const server = await startImapServer({
+    INBOX: [deals(1, 1), deals(2, 2), deals(3, 3), { raw: rawMessage({ n: 4, fromEmail: 'friend@example.com', subject: 'Hi' }) }],
+    Junk: { 'special-use': '\\Junk', messages: [{ raw: rawMessage({ n: 5, fromName: 'Lea', fromEmail: 'lea@studio.example', subject: 'Dinner Friday?' }) }] },
+    Trash: { 'special-use': '\\Trash', messages: [] },
+  })
+  const db = openDatabase(':memory:')
+  const engine = createImapEngine({ database: () => db, secrets: { get: async () => USER.pass, set: async () => {}, delete: async () => {} }, wake: false, watch: false })
+  const events: EngineEvent[] = []
+  engine.subscribe((batch) => events.push(...batch))
+  cleanups.push(() => server.close(), () => db.close(), () => engine.dispose())
+  engine.setAccounts([server.account])
+  engine.syncNow(server.account.id, true)
+  for (let i = 0; i < 200 && !events.some((e) => e.type === 'syncState' && e.state.status === 'idle'); i++) await Bun.sleep(20)
+  const id = server.account.id
+
+  const threads = await engine.senderThreads(id, ['NEWS@deals.example'])
+  expect(threads.map((t) => [t.subject, t.sender, t.fromName])).toEqual([
+    ['Sale 3', 'news@deals.example', 'Deals'],
+    ['Sale 2', 'news@deals.example', 'Deals'],
+    ['Sale 1', 'news@deals.example', 'Deals'],
+  ])
+  // Spam isn't live mail, so it never shows up among a sender's conversations; it has its own list.
+  expect((await engine.spamThreads(id)).map((t) => [t.subject, t.sender])).toEqual([['Dinner Friday?', 'lea@studio.example']])
+
+  const keep = threads.find((t) => t.subject === 'Sale 2')!.threadId
+  const moves = await engine.scrub(id, { sender: 'news@deals.example' }, 'trash', 0, [keep])
+  expect(moves.map((m) => m.threadId)).not.toContain(keep)
+  expect(moves).toHaveLength(2)
+  expect((await engine.senderThreads(id, ['news@deals.example'])).map((t) => t.subject)).toEqual(['Sale 2'])
+})

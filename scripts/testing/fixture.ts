@@ -120,7 +120,7 @@ const EDGE_SAMPLES: Sample[] = [
 export type Fixture = Awaited<ReturnType<typeof startFixture>>
 
 /** Boots the servers (`inbox` replaces the sample mail, for curated marketing shots), writes the account and its secret, and returns the env the app needs. */
-export async function startFixture(dir: string, options: { name?: string; /** Signs in as this address (me@example.com by default), for a second account beside another fixture's. */ email?: string; gmail?: boolean; bulk?: number; newestHtml?: boolean; /** A three-message conversation whose newest message is a long, plain HTML email. */ htmlThread?: boolean; calendar?: boolean; manyAttachments?: boolean; edge?: boolean; inbox?: TestMessage[]; secondAccount?: boolean } = {}) {
+export async function startFixture(dir: string, options: { name?: string; /** Signs in as this address (me@example.com by default), for a second account beside another fixture's. */ email?: string; gmail?: boolean; bulk?: number; newestHtml?: boolean; /** A three-message conversation whose newest message is a long, plain HTML email. */ htmlThread?: boolean; calendar?: boolean; manyAttachments?: boolean; edge?: boolean; inbox?: TestMessage[]; /** Messages in a Spam (\\Junk) folder; without it there is no Spam folder. */ spam?: TestMessage[]; secondAccount?: boolean } = {}) {
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(`${dir}/config`, { recursive: true })
   const login = { user: options.email ?? USER.user, pass: USER.pass }
@@ -172,6 +172,7 @@ export async function startFixture(dir: string, options: { name?: string; /** Si
             '[Gmail]/All Mail': { 'special-use': '\\All', messages: options.inbox ?? [...SAMPLES.map(message), ...bulk] },
             '[Gmail]/Sent Mail': { 'special-use': '\\Sent', messages: sent },
             '[Gmail]/Trash': { 'special-use': '\\Trash', messages: [] },
+            ...(options.spam ? { '[Gmail]/Spam': { 'special-use': '\\Junk', messages: options.spam } } : {}),
             Product: [], Design: [], Customers: [],
           }
         : {

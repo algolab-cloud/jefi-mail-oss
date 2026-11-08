@@ -64,9 +64,9 @@ import { credentialsFor, credentialsFromSecret, oauthSecret } from './credential
 import { OAuthError, signIn } from './oauth'
 import { MissingSecretError, keychainSecrets, type SecretStore } from './secrets'
 import { downloadAttachment, fetchBodiesOf, headerValue, syncAccount, syncMailbox } from './sync'
-import { parseUnsubscribe, scrubReport, scrubStats, scrubTargets, unsubscribeOptions } from './scrub'
+import { parseUnsubscribe, scrubReport, scrubStats, scrubTargets, senderProfiles, senderThreads, spamThreads, unsubscribeOptions } from './scrub'
 import { searchThreads } from './search'
-import { applyRules, deleteRule, isEmptyMatch, listRules, newInboxMessageIds, saveRule } from './rules'
+import { applyRules, countRuleMatches, deleteRule, isEmptyMatch, listRules, newInboxMessageIds, saveRule } from './rules'
 import { blockedSenders, screenerEnabledAt, setScreener, setVerdict } from './screener'
 import { snoozeThread, takeDueSnoozes, unsnoozeThread } from './snooze'
 import { threadMessageIds, uiThreadId } from './threading'
@@ -1519,6 +1519,9 @@ export function createImapEngine(options: ImapEngineOptions = {}): MailEngine {
       deleteRule(database(), accountId, id)
       return listRules(database(), accountId)
     },
+    async countRuleMatches(accountId, match) {
+      return countRuleMatches(database(), accountId, match)
+    },
     async runRule(accountId, id) {
       const rule = listRules(database(), accountId).find((r) => r.id === id)
       if (!rule) return 0
@@ -1543,9 +1546,19 @@ export function createImapEngine(options: ImapEngineOptions = {}): MailEngine {
       const account = accountById(accountId)
       return account ? scrubReport(database(), accountId, by, account.email) : []
     },
+    async senderProfiles(accountId) {
+      const account = accountById(accountId)
+      return account ? senderProfiles(database(), accountId, account.email) : []
+    },
+    async senderThreads(accountId, senders) {
+      return senderThreads(database(), accountId, senders)
+    },
+    async spamThreads(accountId) {
+      return spamThreads(database(), accountId)
+    },
 
-    async scrub(accountId, selector, action, keepLatest) {
-      const targets = scrubTargets(database(), accountId, selector, keepLatest)
+    async scrub(accountId, selector, action, keepLatest, except) {
+      const targets = scrubTargets(database(), accountId, selector, keepLatest, new Set(except ?? []))
       // Purge deletes on the server and drops the local copy: nothing to undo, so nothing is returned.
       if (action === 'purge') {
         let purged = 0

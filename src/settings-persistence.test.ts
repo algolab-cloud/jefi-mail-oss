@@ -79,6 +79,11 @@ test('a settings file from a newer version or a hand edit never loads values the
         paneWidths: { sidebar: 'wide', list: -3, assistant: 400 },
         aiModels: { anthropic: 42, openai: 'gpt-x' },
         signInUserAgent: { family: 'opera', platform: 'linux', suffix: 7 },
+        cleanupKeepSenders: ['Bank@Example.com', 7, '', 'bank@example.com '],
+        cleanupModels: { anthropic: 'claude-haiku-5-5', openai: 3 },
+        cleanupSchedule: 'hourly',
+        cleanupAction: 'delete',
+        cleanupLastRunAt: 'yesterday',
         futureSetting: true,
       }),
     )
@@ -91,6 +96,8 @@ test('a settings file from a newer version or a hand edit never loads values the
     expect(settings.paneWidths).toEqual({ sidebar: DEFAULT_SETTINGS.paneWidths.sidebar, list: DEFAULT_SETTINGS.paneWidths.list, assistant: 400 })
     expect(settings.aiModels).toEqual({ anthropic: '', openai: 'gpt-x', codex: '' })
     expect(settings.signInUserAgent).toEqual({ ...DEFAULT_SETTINGS.signInUserAgent, platform: 'linux' })
+    expect(settings.cleanupKeepSenders).toEqual(['bank@example.com'])
+    expect(settings).toMatchObject({ cleanupModels: { anthropic: 'claude-haiku-5-5', openai: '', codex: '' }, cleanupSchedule: 'off', cleanupAction: 'review', cleanupLastRunAt: 0 })
     // Valid values still load as saved.
     writeFileSync(join(directory, 'settings.json'), JSON.stringify({ theme: 'light', accent: 'green', undoSendSeconds: 20, remoteImages: 'always' }))
     expect(loadSettings()).toMatchObject({ theme: 'light', accent: 'green', undoSendSeconds: 20, remoteImages: 'always' })

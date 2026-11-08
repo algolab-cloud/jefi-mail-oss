@@ -1,8 +1,8 @@
 import type { Account } from '../accounts'
 import type { ConnectionReport } from './connection'
 import type { OAuthProviderId } from './oauth'
-import type { ScrubGroup, ScrubGroupBy, ScrubSelector, ScrubStats } from './scrub'
-import type { MailRule } from './rules'
+import type { ScrubGroup, ScrubGroupBy, ScrubSelector, ScrubStats, SenderProfile, ThreadPeek } from './scrub'
+import type { MailRule, RuleMatch, RuleMatchCount } from './rules'
 import type { Contact, DraftFields, FolderId, Label, MailFolder, MailThread } from '../data'
 import type { MailboxView } from '../view'
 import type { UnreadThread, ViewCursor, ViewPage } from './threads'
@@ -175,18 +175,26 @@ export interface MailEngine {
   deleteRule(accountId: string, id: string): Promise<MailRule[]>
   /** Run one rule over the Inbox now; returns how many conversations it touched. */
   runRule(accountId: string, id: string): Promise<number>
+  /** How many Inbox conversations a rule's conditions cover right now (for the rule editor). */
+  countRuleMatches(accountId: string, match: RuleMatch): Promise<RuleMatchCount>
   /** Search the whole local mailbox (full text + operators); newest conversations first. */
   search(accountId: string, query: string): Promise<MailThread[]>
   /** Clean-up report: senders, newsletters, old or large mail, from the local database. */
   scrubReport(accountId: string, by: ScrubGroupBy): Promise<ScrubGroup[]>
   /** Mailbox-wide numbers for the Clean up overview. */
   scrubStats(accountId: string): Promise<ScrubStats | null>
+  /** Senders with mail in the Inbox and what the mailbox knows about them, for the smart clean-up. */
+  senderProfiles(accountId: string): Promise<SenderProfile[]>
+  /** The newest conversations from each of these senders, for a closer look before clearing them. */
+  senderThreads(accountId: string, senders: string[]): Promise<ThreadPeek[]>
+  /** The newest conversations in Spam. */
+  spamThreads(accountId: string): Promise<ThreadPeek[]>
   /** Move every conversation a group covers (minus the newest `keepLatest`); returns what moved, for Undo. */
   /**
    * Clears mail in bulk: 'archive' and 'trash' move it (and can be undone), 'purge' erases it on the
    * server, which cannot. Returns what moved; purging returns nothing, because there is no way back.
    */
-  scrub(accountId: string, selector: ScrubSelector, action: 'archive' | 'trash' | 'purge', keepLatest: number): Promise<ScrubMove[]>
+  scrub(accountId: string, selector: ScrubSelector, action: 'archive' | 'trash' | 'purge', keepLatest: number, except?: string[]): Promise<ScrubMove[]>
   /** Put scrubbed conversations back where they were. */
   unscrub(accountId: string, moves: ScrubMove[]): void
   /** Leave a mailing list: one-click POST when offered; otherwise a mailto or web link for the UI. */

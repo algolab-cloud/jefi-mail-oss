@@ -172,11 +172,158 @@ export function scrubReport(db: MailDatabase, accountId: string, by: ScrubGroupB
     .filter((g) => g.messages > 0)
 }
 
+/** A sender with mail in the Inbox, with what the local mailbox already says about them. */
+export type SenderProfile = ScrubGroup & {
+  /** Messages the person sent to this address: someone they write to is someone they know. */
+  wrote: number
+  /** Their messages the person flagged, or answered. */
+  flagged: number
+  answered: number
+  /** Looks like a bulk sender (List-Unsubscribe, no-reply, newsletter@…). */
+  bulk: boolean
+  /** Their newest subjects, newest first. */
+  subjects: string[]
+}
+
+/**
+ * Everyone with mail in the Inbox, busiest first, for the smart clean-up to sort. Counts cover all
+ * of their live mail, because that's what a clean-up of the sender moves.
+ */
+export function senderProfiles(db: MailDatabase, accountId: string, self: string, limit = 200): SenderProfile[] {
+  const me = self.toLowerCase()
+  const rows = db
+    .query(
+      `SELECT lower(m.from_email) AS email, max(m.from_name) AS name, count(*) AS messages, sum(m.seen = 0) AS unread,
+              sum(COALESCE(m.size, 0)) AS bytes, max(m.date) AS latest, max(m.list_unsubscribe IS NOT NULL) AS unsub,
+              sum(m.flagged) AS flagged, sum(m.answered) AS answered, max(${BULK_ADDRESS}) AS bulk,
+              max(EXISTS (SELECT 1 FROM message_mailboxes mm JOIN mailboxes mb ON mb.id = mm.mailbox_id WHERE mm.message_id = m.id AND mb.special_use = '\\Inbox')) AS in_inbox
+         FROM messages m
+        WHERE m.account_id = ?1 AND m.from_email IS NOT NULL AND lower(m.from_email) <> ?2 AND ${LIVE}
+        GROUP BY lower(m.from_email)
+       HAVING in_inbox = 1
+        ORDER BY count(*) DESC, max(m.date) DESC
+        LIMIT ?3`,
+    )
+    .all(accountId, me, limit) as Array<{ email: string; name: string | null; messages: number; unread: number; bytes: number; latest: number; unsub: number; flagged: number; answered: number; bulk: number }>
+  if (!rows.length) return []
+  const wanted = new Set(rows.map((r) => r.email))
+
+  // Who the person writes to, from what they sent: one pass, not a lookup per sender.
+  const wrote = new Map<string, number>()
+  const sent = db
+    .query(`SELECT to_json, cc_json FROM messages WHERE account_id = ? AND lower(from_email) = ? ORDER BY date DESC LIMIT 5000`)
+    .all(accountId, me) as Array<{ to_json: string; cc_json: string }>
+  for (const row of sent) {
+    for (const json of [row.to_json, row.cc_json]) {
+      for (const address of addresses(json)) if (wanted.has(address)) wrote.set(address, (wrote.get(address) ?? 0) + 1)
+    }
+  }
+
+  const subjects = new Map<string, string[]>()
+  const recent = db
+    .query(
+      `SELECT e, subject FROM (
+         SELECT lower(m.from_email) AS e, m.subject, row_number() OVER (PARTITION BY lower(m.from_email) ORDER BY m.date DESC) AS rn
+           FROM messages m
+          WHERE m.account_id = ?1 AND m.from_email IS NOT NULL AND lower(m.from_email) <> ?2 AND ${LIVE})
+        WHERE rn <= 3`,
+    )
+    .all(accountId, me) as Array<{ e: string; subject: string }>
+  for (const r of recent) if (wanted.has(r.e)) subjects.set(r.e, [...(subjects.get(r.e) ?? []), r.subject])
+
+  return rows.map((r) => ({
+    key: `sender:${r.email}`,
+    selector: { sender: r.email },
+    label: r.name || r.email,
+    detail: r.email,
+    messages: r.messages,
+    unread: r.unread ?? 0,
+    bytes: r.bytes ?? 0,
+    latest: r.latest,
+    canUnsubscribe: r.unsub === 1,
+    wrote: wrote.get(r.email) ?? 0,
+    flagged: r.flagged ?? 0,
+    answered: r.answered ?? 0,
+    bulk: r.bulk === 1,
+    subjects: subjects.get(r.email) ?? [],
+  }))
+}
+
+/** One conversation, as the smart clean-up shows it to the model: who, what, and a preview. */
+export type ThreadPeek = { threadId: string; sender: string; fromName: string; subject: string; snippet: string; latest: number; flagged: boolean }
+
+type PeekRow = { id: number; thread_id: string | null; sender: string; from_name: string | null; subject: string; snippet: string; date: number; flagged: number }
+
+/** Messages (newest first) as conversations: the newest message speaks for each; starred if any is. */
+function peeks(accountId: string, rows: PeekRow[], take: (row: PeekRow, count: number) => boolean): ThreadPeek[] {
+  const out = new Map<string, ThreadPeek>()
+  for (const row of rows) {
+    const threadId = uiThreadId(accountId, row.thread_id, row.id)
+    const seen = out.get(threadId)
+    if (seen) {
+      seen.flagged ||= row.flagged === 1
+      continue
+    }
+    if (!take(row, out.size)) continue
+    out.set(threadId, { threadId, sender: row.sender, fromName: row.from_name || row.sender, subject: row.subject, snippet: row.snippet, latest: row.date, flagged: row.flagged === 1 })
+  }
+  return [...out.values()]
+}
+
+/**
+ * The newest conversations of each sender (live mail, `perSender` at most), so the smart clean-up
+ * can look for the ones worth keeping before it clears the rest.
+ */
+export function senderThreads(db: MailDatabase, accountId: string, senders: string[], perSender = 25): ThreadPeek[] {
+  if (!senders.length) return []
+  const list = [...new Set(senders.map((s) => s.toLowerCase()))]
+  const rows = db
+    .query(
+      `SELECT m.id, m.thread_id, lower(m.from_email) AS sender, m.from_name, m.subject, m.snippet, m.date, m.flagged
+         FROM messages m
+        WHERE m.account_id = ?1 AND lower(m.from_email) IN (${list.map((_, i) => `?${i + 2}`).join(', ')}) AND ${LIVE}
+        ORDER BY m.date DESC`,
+    )
+    .all(accountId, ...list) as PeekRow[]
+  const counts = new Map<string, number>()
+  return peeks(accountId, rows, (row) => {
+    const count = counts.get(row.sender) ?? 0
+    if (count >= perSender) return false
+    counts.set(row.sender, count + 1)
+    return true
+  })
+}
+
+/** The newest conversations in Spam, for the smart clean-up to look for real mail misfiled there. */
+export function spamThreads(db: MailDatabase, accountId: string, limit = 100): ThreadPeek[] {
+  const rows = db
+    .query(
+      `SELECT m.id, m.thread_id, lower(m.from_email) AS sender, m.from_name, m.subject, m.snippet, m.date, m.flagged
+         FROM messages m
+        WHERE m.account_id = ?1 AND m.from_email IS NOT NULL
+          AND EXISTS (SELECT 1 FROM message_mailboxes mm JOIN mailboxes mb ON mb.id = mm.mailbox_id WHERE mm.message_id = m.id AND mb.special_use = '\\Junk')
+        ORDER BY m.date DESC
+        LIMIT ?2`,
+    )
+    .all(accountId, limit * 4) as PeekRow[]
+  return peeks(accountId, rows, (_, count) => count < limit)
+}
+
+/** Lower-cased addresses in a stored to/cc list; a malformed list is no one. */
+function addresses(json: string): string[] {
+  try {
+    const list = JSON.parse(json) as Array<{ email?: unknown }>
+    return Array.isArray(list) ? list.flatMap((a) => (typeof a?.email === 'string' && a.email ? [a.email.trim().toLowerCase()] : [])) : []
+  } catch {
+    return []
+  }
+}
+
 /**
  * The conversations a scrub would move, newest first, skipping the `keepLatest` most recent.
  * `inInbox` records where each lived, so Undo can put it back.
  */
-export function scrubTargets(db: MailDatabase, accountId: string, selector: ScrubSelector, keepLatest = 0): Array<{ threadId: string; inInbox: boolean }> {
+export function scrubTargets(db: MailDatabase, accountId: string, selector: ScrubSelector, keepLatest = 0, except: ReadonlySet<string> = new Set()): Array<{ threadId: string; inInbox: boolean }> {
   const [where, value] =
     'sender' in selector
       ? ['lower(m.from_email) = ?2', selector.sender.toLowerCase()]
@@ -193,7 +340,10 @@ export function scrubTargets(db: MailDatabase, accountId: string, selector: Scru
         ORDER BY latest DESC`,
     )
     .all(accountId, value) as Array<{ thread_id: string | null; id: number; latest: number; in_inbox: number }>
-  return rows.slice(keepLatest).map((r) => ({ threadId: uiThreadId(accountId, r.thread_id, r.id), inInbox: r.in_inbox === 1 }))
+  return rows
+    .slice(keepLatest)
+    .map((r) => ({ threadId: uiThreadId(accountId, r.thread_id, r.id), inInbox: r.in_inbox === 1 }))
+    .filter((target) => !except.has(target.threadId))
 }
 
 export type Unsubscribe = { oneClick: string | null; link: string | null; mailto: string | null }

@@ -68,7 +68,7 @@ export function useNow(ms = 10_000) {
   return now
 }
 
-function NavRow({
+export function NavRow({
   icon,
   label,
   active,
@@ -153,7 +153,7 @@ function NavRow({
 }
 
 /** A section's title; with `onToggle` it folds the rows under it, and remembers. */
-function SectionHeader({ label, open, onToggle, testId, action }: { label: string; open?: boolean; onToggle?: () => void; testId?: string; action?: ReactNode }) {
+export function SectionHeader({ label, open, onToggle, testId, action }: { label: string; open?: boolean; onToggle?: () => void; testId?: string; action?: ReactNode }) {
   const { C } = useSettings()
   return (
     <div style={{ height: 28, marginTop: 14, flexShrink: 0, display: 'flex', flexDirection: 'row', alignItems: 'center' }}>
@@ -713,7 +713,7 @@ export const AppRail = memo(function AppRail({
         <RailSync onSettings={openSettings} />
         <div style={{ width: 24, height: 1, backgroundColor: C.divider, marginTop: 4, marginBottom: 8, flexShrink: 0 }} />
         <RailAccount onAddAccount={addAccount} onManage={manageAccounts} />
-        <RailItem label="Settings" active={settingsOpen} onSelect={onSettings} testId="nav-settings" height={34}>
+        <RailItem label="Settings" active={settingsOpen} onSelect={() => onSettings()} testId="nav-settings" height={34}>
           <Icon name="settings" size={18} color={settingsOpen ? C.text : C.secondary} />
         </RailItem>
       </div>
@@ -934,7 +934,7 @@ export const MailSidebar = memo(function MailSidebar({
           <>
             {MORE_FOLDERS.map(folderRow)}
             {/* The tools sit with the mailboxes you open now and then, not pinned under every list. */}
-            <NavRow icon="sparkles" label="Clean up" testId="nav-cleanup" active={!settingsOpen && tool === 'cleanup'} onSelect={() => onTool('cleanup')} />
+            <NavRow icon="broom" label="Clean up" testId="nav-cleanup" active={!settingsOpen && tool === 'cleanup'} onSelect={() => onTool('cleanup')} />
             <NavRow icon="sliders" label="Rules" testId="nav-rules" active={!settingsOpen && tool === 'rules'} onSelect={() => onTool('rules')} />
           </>
         ) : null}

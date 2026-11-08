@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { SETTINGS_SECTIONS, deferJefiRoute, dispatchJefiUrl, eventPrefill, isoDay, localDay, parseJefiUrl, recipients, routeJefiLink, settingsSectionWindow, subscribeJefiLinks, type JefiRoute, type LinkTargets } from './deeplink'
+import { SETTINGS_SECTIONS, deferJefiRoute, dispatchJefiUrl, eventPrefill, isoDay, localDay, parseJefiUrl, recipients, routeJefiLink, subscribeJefiLinks, type JefiRoute, type LinkTargets } from './deeplink'
 
 describe('parseJefiUrl', () => {
   test('mail routes', () => {
@@ -143,12 +143,5 @@ describe('settings sections', () => {
   test('every section of the settings page has a link, integrations included', () => {
     expect(parseJefiUrl('jefi://settings/integrations')).toEqual({ kind: 'settings', section: 'integrations' })
     expect(SETTINGS_SECTIONS.indexOf('integrations')).toBe(SETTINGS_SECTIONS.indexOf('menubar') + 1)
-  })
-
-  test('the page mounts the asked-for section with room around it', () => {
-    expect(settingsSectionWindow()).toEqual({ start: 0, end: 4 })
-    expect(settingsSectionWindow('appearance')).toEqual({ start: 0, end: 5 })
-    expect(settingsSectionWindow('calendar')).toEqual({ start: 5, end: 11 })
-    expect(settingsSectionWindow('about')).toEqual({ start: SETTINGS_SECTIONS.length - 2, end: SETTINGS_SECTIONS.length })
   })
 })

@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { ruleProblem } from './rules'
+import { ruleProblem, matchPreviewText } from './rules'
 import { ruleDraftFrom } from './store'
 import type { MailRule } from './engine/rules'
 
@@ -18,4 +18,14 @@ test('a rule needs a name, a condition and an action before it can be saved', ()
   expect(ruleProblem(rule({ match: { from: ' ' } }))).toBe('Add at least one condition')
   expect(ruleProblem(rule({ actions: {} }))).toBe('Choose at least one thing to do')
   expect(ruleProblem(rule({ actions: { star: true } }))).toBeNull()
+})
+
+test('the rule preview says what matches, and offers what "mailing list" leaves out', () => {
+  expect(matchPreviewText({ matches: 2, withoutList: 1041 })).toEqual({
+    text: 'Matches 2 conversations in your Inbox now. Save, then Run now to sort them; new mail is sorted as it arrives.',
+    hint: "1,039 conversations more match if it doesn't have to be from a mailing list. Receipts and notifications usually aren't.",
+  })
+  expect(matchPreviewText({ matches: 1, withoutList: 2 }).hint).toBe("1 conversation more matches if it doesn't have to be from a mailing list. Receipts and notifications usually aren't.")
+  expect(matchPreviewText({ matches: 0, withoutList: null })).toEqual({ text: 'Nothing in your Inbox matches this right now. New mail that does will be sorted as it arrives.', hint: null })
+  expect(matchPreviewText({ matches: 3, withoutList: 3 }).hint).toBeNull()
 })

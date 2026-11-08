@@ -22,7 +22,12 @@ import { sameItems } from './store-equality'
 import { ReadingPane, prepareForwardDraft } from './reading'
 import { replyDraft } from './reply'
 import { SettingsPane } from './settings'
+import { SettingsSidebar } from './settings-sidebar'
 import { CleanupPane } from './cleanup'
+import { useScheduledCleanup } from './cleanup-schedule'
+import { lockMailbox } from './instance-lock'
+import { configDir } from './paths'
+import { requestSmartView } from './smart-clean'
 import { dispatchKey, isCmd, useKeys } from './keys'
 import { CommandPalette, type Command } from './palette'
 import { hintFor, shortcutFor, type Prefix, type ShortcutAction } from './shortcuts'
@@ -90,7 +95,7 @@ import { closePlan, configureLifecycle, onMainWindowShown, showMainWindow } from
 import { listenForLinks } from './native/links'
 import { installWindowGlass } from './native/window-glass'
 import { dispatchEventOpen } from './native/notify'
-import { deferJefiRoute, routeJefiLink, subscribeJefiLinks, type LinkTargets, type SettingsSection } from './deeplink'
+import { SETTINGS_SECTIONS, deferJefiRoute, routeJefiLink, subscribeJefiLinks, type LinkTargets, type SettingsSection } from './deeplink'
 import { requestCalendar, showEvent } from './calendar/state'
 import { quickAddPrefill, quickAddTask } from './menubar/model'
 import { parseTaskText } from './tasks/model'
@@ -561,6 +566,11 @@ function Workspace({ onAddAccount, wizardOpen }: { onAddAccount: () => void; wiz
     setSettingsFocus(null)
     setTool(next === 'settings' ? null : next)
   }
+  // The scheduled clean-up; its "Review" opens Clean up on the Smart tab.
+  useScheduledCleanup(() => {
+    requestSmartView()
+    openPane('cleanup')
+  })
   /** Settings, scrolled to one section. */
   const openSettingsAt = (section: SettingsSection) => {
     openPane('settings')
@@ -656,7 +666,7 @@ function Workspace({ onAddAccount, wizardOpen }: { onAddAccount: () => void; wiz
         { id: 'new-note', label: 'New note', group: 'Actions', icon: 'file', hint: hintFor('newNote', bindings), keywords: 'notes jot memo', run: () => requestNotes({ create: true }) },
         { id: 'calendar', label: 'Calendar', group: 'Tools', icon: 'calendar', hint: '⌘2', keywords: 'events schedule agenda meetings', run: () => openPane('calendar') },
         { id: 'new-event', label: 'New event', group: 'Actions', icon: 'calendarPlus', keywords: 'calendar meeting schedule appointment', run: () => openEventEditor() },
-        { id: 'cleanup', label: 'Clean up mailbox', group: 'Tools', icon: 'sparkles', keywords: 'scrub unsubscribe newsletters delete old large', run: () => openPane('cleanup') },
+        { id: 'cleanup', label: 'Clean up mailbox', group: 'Tools', icon: 'broom', keywords: 'scrub unsubscribe newsletters delete old large junk smart ai', run: () => openPane('cleanup') },
         { id: 'rules', label: 'Rules', group: 'Tools', icon: 'sliders', keywords: 'filters automate', run: () => openPane('rules') },
         { id: 'settings', label: 'Settings', group: 'Tools', icon: 'settings', keywords: 'preferences accounts', run: () => openPane('settings') },
         { id: 'report-bug', label: 'Report a bug', group: 'Actions', icon: 'alertCircle', keywords: 'feedback problem issue broken crash support', run: () => openFeedback('bug') },
@@ -719,7 +729,8 @@ function Workspace({ onAddAccount, wizardOpen }: { onAddAccount: () => void; wiz
   const onViewStable = useStableCallback(goView)
   const toggleAssistant = useStableCallback(() => setAssistantOpen((open) => !open))
   const openPalette = useStableCallback(() => setPaletteOpen(true))
-  const openSettingsPane = useStableCallback((section?: SettingsSection) => (section ? openSettingsAt(section) : openPane('settings')))
+  // Only a real section name opens a page; anything else (a click event handed through) reopens the last one.
+  const openSettingsPane = useStableCallback((section?: SettingsSection) => (typeof section === 'string' && SETTINGS_SECTIONS.includes(section) ? openSettingsAt(section) : openPane('settings')))
   const openTool = useStableCallback((next: Tool) => openPane(next))
   const composeNew = useStableCallback(() => openCompose())
   const addAccount = useStableCallback(() => onAddAccount())
@@ -836,7 +847,12 @@ function Workspace({ onAddAccount, wizardOpen }: { onAddAccount: () => void; wiz
       {/* Notes has no context column: its own list (search, pinned first) already is its navigation. */}
       {sidebarCollapsed || app === 'notes' ? null : (
         <>
-          {app === 'calendar' ? (
+          {settingsOpen ? (
+            // Settings brings its own navigation, the way Calendar and Tasks do.
+            <ContextColumn testId="settings-context">
+              <SettingsSidebar />
+            </ContextColumn>
+          ) : app === 'calendar' ? (
             <ContextColumn testId="calendar-context">
               <CalendarSidebar embedded />
             </ContextColumn>
@@ -860,7 +876,7 @@ function Workspace({ onAddAccount, wizardOpen }: { onAddAccount: () => void; wiz
         </>
       )}
       {settingsOpen ? (
-        <SettingsPane onAddAccount={onAddAccount} focus={settingsFocus} />
+        <SettingsPane onAddAccount={onAddAccount} focus={settingsFocus} nav={sidebarCollapsed || app === 'notes'} />
       ) : tool === 'cleanup' ? (
         <CleanupPane />
       ) : tool === 'rules' ? (
@@ -1053,6 +1069,11 @@ const isEntryPoint =
   typeof Bun !== 'undefined'
     ? Bun.isStandaloneExecutable || Bun.main === import.meta.path
     : typeof process !== 'undefined' && process.argv[1]?.endsWith('mail.tsx')
+
+// One Jefi per mailbox: a second one (the installed app beside a dev build, say) brings the first
+// forward and closes before it opens a window or touches mail.db.
+const mailbox = isEntryPoint ? configDir() : null
+if (mailbox && !lockMailbox(mailbox, { checkUnlocked: !process.env.JEFI_CONFIG_DIR })) process.exit(0)
 
 if (isEntryPoint) {
   applyMacCpuThrottleFromEnv()

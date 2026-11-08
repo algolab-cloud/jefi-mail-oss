@@ -4,7 +4,7 @@ import { Icon } from './icons'
 import { useMail } from './store'
 import { Switch } from './settings'
 import { Button, Field, SegmentedControl, TextInput } from './ui'
-import type { MailRule, RuleActions } from './engine/rules'
+import { isEmptyMatch, type MailRule, type RuleActions, type RuleMatchCount } from './engine/rules'
 
 // ---------------------------------------------------------------------------
 // Rules: "when mail matches, do this". The engine runs enabled rules on new Inbox mail after each
@@ -122,8 +122,25 @@ function RuleEditor({
   onCancel: () => void
 }) {
   const { C } = useSettings()
+  const { countRuleMatches } = useMail()
   const [rule, setRule] = useState(draft)
   useEffect(() => setRule(draft), [draft.id])
+  // What the conditions cover right now, so a rule that matches nothing (or far less than meant) shows it.
+  const [preview, setPreview] = useState<RuleMatchCount | null>(null)
+  const conditions = JSON.stringify(rule.match)
+  useEffect(() => {
+    if (isEmptyMatch(rule.match)) return setPreview(null)
+    let live = true
+    const timer = setTimeout(() => {
+      countRuleMatches(rule.match)
+        .then((count) => live && setPreview(count))
+        .catch(() => live && setPreview(null))
+    }, 250)
+    return () => {
+      live = false
+      clearTimeout(timer)
+    }
+  }, [conditions])
   const match = (patch: Partial<MailRule['match']>) => setRule((r) => ({ ...r, match: { ...r.match, ...patch } }))
   const act = (patch: Partial<RuleActions>) => setRule((r) => ({ ...r, actions: { ...r.actions, ...patch } }))
   const problem = ruleProblem(rule)
@@ -153,6 +170,7 @@ function RuleEditor({
         <Toggle label="Is from a mailing list" value={!!rule.match.list} onChange={(list) => match({ list })} testId="rule-list" />
         <Toggle label="Has attachments" value={!!rule.match.hasAttachment} onChange={(hasAttachment) => match({ hasAttachment })} testId="rule-attachment" />
       </div>
+      {preview ? <MatchPreview count={preview} onDropList={() => match({ list: false })} /> : null}
       <text style={{ fontSize: 12.5, fontWeight: 600, color: C.text, fontFamily: FONT, paddingTop: 4 }}>Then</text>
       <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 18, flexWrap: 'wrap' }}>
         <SegmentedControl value={(rule.actions.moveTo ?? 'none') as Move} options={MOVES} onChange={(value) => act({ moveTo: value === 'none' ? undefined : value })} testId="rule-move" />
@@ -188,6 +206,34 @@ function Toggle({ label, value, onChange, testId }: { label: string; value: bool
     <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
       <Switch value={value} onChange={onChange} testId={testId} />
       <text style={{ fontSize: 12.5, color: C.secondary, fontFamily: FONT }}>{label}</text>
+    </div>
+  )
+}
+
+const conversations = (n: number) => `${n.toLocaleString()} ${n === 1 ? 'conversation' : 'conversations'}`
+
+/** "Matches 2 conversations in your Inbox now", and when "mailing list" is what narrows it, by how much. */
+export function matchPreviewText(count: RuleMatchCount): { text: string; hint: string | null } {
+  const text = count.matches
+    ? `Matches ${conversations(count.matches)} in your Inbox now. Save, then Run now to sort them; new mail is sorted as it arrives.`
+    : 'Nothing in your Inbox matches this right now. New mail that does will be sorted as it arrives.'
+  const more = count.withoutList === null ? 0 : count.withoutList - count.matches
+  const hint = more > 0 ? `${conversations(more)} more ${more === 1 ? 'matches' : 'match'} if it doesn't have to be from a mailing list. Receipts and notifications usually aren't.` : null
+  return { text, hint }
+}
+
+function MatchPreview({ count, onDropList }: { count: RuleMatchCount; onDropList: () => void }) {
+  const { C } = useSettings()
+  const { text, hint } = matchPreviewText(count)
+  return (
+    <div testId="rule-preview" style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingLeft: 12, paddingRight: 12, paddingTop: 9, paddingBottom: 9, borderRadius: 10, backgroundColor: C.overlay }}>
+      <text testId="rule-preview-text" style={{ fontSize: 12.5, lineHeight: 17, color: C.secondary, fontFamily: FONT }}>{text}</text>
+      {hint ? (
+        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          <text testId="rule-preview-hint" style={{ flexGrow: 1, fontSize: 12.5, lineHeight: 17, color: C.accent, fontFamily: FONT }}>{hint}</text>
+          <Button label="Include them" variant="secondary" onClick={onDropList} testId="rule-preview-include" />
+        </div>
+      ) : null}
     </div>
   )
 }

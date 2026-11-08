@@ -1,6 +1,6 @@
 import { countRender } from './render-counts'
 import { motion, useGpuixRequired, type PublicInstance } from '@gpuix/react'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { AccountLabelChip, Face } from './primitives'
 import { useMail } from './store'
 import { Button, Menu, MenuItem, MenuLabel, MenuSeparator, SecretInput, SegmentedControl, TextInput, useToggle } from './ui'
@@ -9,6 +9,7 @@ import { REBINDABLE, assignableKey, shortcutList, type ShortcutAction } from './
 import { ALL_DAY_ALERTS, TIMED_ALERTS, alertLabel, taskAlertLabel } from './calendar/alerts'
 import { ANTHROPIC_MODEL, OPENAI_MODEL, listClaudeModels, listCodexModels, listOpenAIModels, testAnthropicKey, testOpenAIKey, aiErrorMessage, type ModelOption } from './ai'
 import { refreshCodex, setAnthropicKey, setOpenAIKey, useAi } from './use-ai'
+import { nextCleanupAt, runCleanupNow, useCleanupRunning } from './cleanup-schedule'
 import { codexPath, setCodexPath } from './codex-path'
 import { pickFile } from './native/file-picker'
 import { SIGN_IN_BROWSERS, SIGN_IN_PLATFORMS, browserVersion, inAppSignInAvailable, platformToken, signInUserAgent, webkitVersion } from './native/oauth-window'
@@ -28,7 +29,9 @@ import { NotificationPermissionControl, permissionSummary, useNotificationPermis
 import { copyLink } from './native/mail-webview'
 import { setupSnippets, snippetDisplayLines } from './headless/setup'
 import { toast } from './toast'
-import { SETTINGS_SECTIONS, settingsSectionIndex, settingsSectionWindow, type SettingsSection } from './deeplink'
+import type { SettingsSection } from './deeplink'
+import { pageOf, settingsPage, showSettingsPage, useSettingsPage } from './settings-pages'
+import { SettingsNav } from './settings-sidebar'
 import { openFeedback } from './feedback'
 
 export function Switch({ value, onChange, testId }: { value: boolean; onChange: (value: boolean) => void; testId?: string }) {
@@ -196,7 +199,15 @@ export function AccentSwatch({ name }: { name: AccentName }) {
   )
 }
 
-export function SettingsCard({ children }: { children: ReactNode }) {
+export /** Whether this section opens its page: its heading would only repeat the page's title. */
+const FirstOnPage = createContext(false)
+
+/** A section's heading, left out when it is the first thing on its page (the title above says it). */
+function Heading({ children, top }: { children: string; top?: number }) {
+  return useContext(FirstOnPage) ? <div style={{ height: 6, flexShrink: 0 }} /> : <SectionLabel top={top}>{children}</SectionLabel>
+}
+
+function SettingsCard({ children }: { children: ReactNode }) {
   const { C } = useSettings()
   return (
     <div
@@ -263,7 +274,7 @@ function KeyboardSettings() {
   })
   return (
     <>
-      <SectionLabel>Keyboard</SectionLabel>
+      <Heading>Keyboard</Heading>
       <SettingsCard>
         <SettingsRow title="Shortcuts" sub={settings.shortcutScheme === 'single' ? 'Single keys, as in Gmail: E archives, R replies, J and K move' : settings.shortcutScheme === 'command' ? 'With ⌘, as in Apple Mail, so a stray key does nothing' : 'No mail shortcuts; ⌘N and ⌘K still work'}>
           <SegmentedControl
@@ -482,7 +493,7 @@ function AiSettings() {
   const providerReady = ai.available
   return (
     <>
-      <SectionLabel>AI</SectionLabel>
+      <Heading>AI</Heading>
       <SettingsCard>
         <SettingsRow title="Provider" sub="Choose how Jefi runs summaries and reply drafts.">
           <SegmentedControl
@@ -568,6 +579,74 @@ function AiSettings() {
   )
 }
 
+const CLEANUP_ACTION_SUB = {
+  review: 'Sorted for you to review under Clean up → Smart. Nothing moves on its own',
+  archive: 'Junk is archived. Undo from the notice, or find it in Archive',
+  trash: 'Junk goes to Trash. Undo from the notice, or restore it from Trash',
+} as const
+
+/** The smart clean-up on a schedule: how often, and what happens to the junk it finds. */
+function CleanupSettings() {
+  const { settings, update, C } = useSettings()
+  const ai = useAi()
+  const running = useCleanupRunning()
+  const ready = !!ai.connection
+  const now = Date.now()
+  const when = (ms: number) => new Date(ms).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+  const next = nextCleanupAt(settings.cleanupSchedule, settings.cleanupLastRunAt, now)
+  const last = settings.cleanupLastRunAt ? `Last run ${when(settings.cleanupLastRunAt)}` : 'Not run yet'
+  const upcoming = !ready || next === null ? null : next <= now + 60_000 ? 'Next run in the next few minutes' : `Next run ${when(next)}`
+  const usingCodex = settings.aiProvider === 'openai' && settings.aiOpenAiMode === 'codex'
+  return (
+    <>
+      <Heading>Inbox clean-up</Heading>
+      <SettingsCard>
+        {ready ? null : (
+          <>
+            <SettingsRow title="Needs AI" sub="Clean up sorts mail with your AI provider. Set one up and turn on AI features first">
+              <Button label="Open AI settings" variant="secondary" onClick={() => showSettingsPage('ai')} testId="cleanup-open-ai" />
+            </SettingsRow>
+            <CardDivider />
+          </>
+        )}
+        {ai.available ? (
+          <>
+            <ModelPicker slot={usingCodex ? 'codex' : settings.aiProvider} apiKey={ai.key} field="cleanupModels" />
+            <CardDivider />
+          </>
+        ) : null}
+        <SettingsRow title="Clean up automatically" sub={"Sorts every account's Inbox while Jefi is open, with the clean-up model"}>
+          <SegmentedControl
+            testId="cleanup-schedule"
+            value={settings.cleanupSchedule}
+            options={[{ value: 'off', label: 'Off' }, { value: 'daily', label: 'Daily' }, { value: 'weekly', label: 'Weekly' }]}
+            onChange={(cleanupSchedule) => update({ cleanupSchedule })}
+          />
+        </SettingsRow>
+        <CardDivider />
+        <SettingsRow title="Junk it finds" sub={CLEANUP_ACTION_SUB[settings.cleanupAction]}>
+          <SegmentedControl
+            testId="cleanup-action"
+            value={settings.cleanupAction}
+            options={[{ value: 'review', label: 'Just sort' }, { value: 'archive', label: 'Archive' }, { value: 'trash', label: 'Trash' }]}
+            onChange={(cleanupAction) => update({ cleanupAction })}
+          />
+        </SettingsRow>
+        <CardDivider />
+        <SettingsRow title={running ? 'Cleaning up…' : last} sub={running ? 'Sorting senders in every Inbox' : [settings.cleanupLastRunAt ? settings.cleanupLastSummary : '', upcoming ?? 'Runs only when you choose Run now'].filter(Boolean).join(' · ')}>
+          <Button label={running ? 'Running…' : 'Run now'} variant="secondary" disabled={!ready || running} onClick={() => void runCleanupNow()} testId="cleanup-run-now" />
+        </SettingsRow>
+        <CardDivider />
+        <div style={{ paddingLeft: 14, paddingRight: 14, paddingTop: 10, paddingBottom: 12 }}>
+          <text style={{ fontSize: 12, lineHeight: 17, color: C.muted, fontFamily: FONT }}>
+            Only senders the AI calls junk are touched: never ones it isn't sure about, anyone you write to or answer, senders whose mail you flagged, or senders you chose to keep. Their receipts, codes and account notices stay put, and real mail found in Spam is only pointed out, never moved for you. Sender names, addresses, subject lines and short previews go to your AI provider; full messages don't.
+          </text>
+        </div>
+      </SettingsCard>
+    </>
+  )
+}
+
 /**
  * Which model a provider runs. The list comes from the provider itself (Anthropic's and OpenAI's
  * model lists with the saved key, or the Codex CLI's catalog); any other model id can be typed in.
@@ -602,16 +681,21 @@ function CodexPathRow({ onChecked }: { onChecked: (status: { tone: 'ok' | 'error
   )
 }
 
-function ModelPicker({ slot, apiKey }: { slot: 'anthropic' | 'openai' | 'codex'; apiKey: string | null }) {
+function ModelPicker({ slot, apiKey, field = 'aiModels' }: { slot: 'anthropic' | 'openai' | 'codex'; apiKey: string | null; /** The main model, or the one clean-up sorts senders with. */ field?: 'aiModels' | 'cleanupModels' }) {
   const { settings, update, C } = useSettings()
   const menu = useToggle()
   const [models, setModels] = useState<{ slot: string; list: ModelOption[] } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [custom, setCustom] = useState('')
-  const chosen = settings.aiModels[slot]
-  const fallback = slot === 'anthropic' ? ANTHROPIC_MODEL : slot === 'openai' ? OPENAI_MODEL : 'set by ChatGPT'
+  const forCleanup = field === 'cleanupModels'
+  const chosen = settings[field][slot]
+  const builtIn = slot === 'anthropic' ? ANTHROPIC_MODEL : slot === 'openai' ? OPENAI_MODEL : 'set by ChatGPT'
+  // Clean-up falls back to the main model, whatever that is.
+  const fallback = forCleanup ? settings.aiModels[slot] || builtIn : builtIn
+  const defaultLabel = forCleanup ? `Same as Model · ${fallback}` : `Default · ${fallback}`
+  const tid = forCleanup ? 'ai-cleanup-model' : 'ai-model'
   const choose = (model: string) => {
-    update({ aiModels: { ...settings.aiModels, [slot]: model.trim() } })
+    update({ [field]: { ...settings[field], [slot]: model.trim() } })
     menu.close()
   }
   const open = () => {
@@ -622,20 +706,20 @@ function ModelPicker({ slot, apiKey }: { slot: 'anthropic' | 'openai' | 'codex';
     load.then((list) => setModels({ slot, list })).catch((e) => setError(aiErrorMessage(e)))
   }
   const list = models?.slot === slot ? models.list : null
-  const label = chosen ? (list?.find((m) => m.id === chosen)?.label ?? chosen) : `Default · ${fallback}`
+  const label = chosen ? (list?.find((m) => m.id === chosen)?.label ?? chosen) : defaultLabel
   return (
-    <SettingsRow title="Model" sub="Used for summaries, reply drafts and the assistant">
+    <SettingsRow title={forCleanup ? 'Clean-up model' : 'Model'} sub={forCleanup ? 'Sorts senders for Clean up. A smaller, faster model works well and costs less' : 'Used for summaries, reply drafts and the assistant'}>
       <div style={{ flexShrink: 0, position: 'relative' }}>
         <div
-          testId="ai-model"
+          testId={`${tid}`}
           onClick={open}
           style={{ height: 30, paddingLeft: 10, paddingRight: 8, gap: 6, borderRadius: 15, backgroundColor: C.overlay, display: 'flex', flexDirection: 'row', alignItems: 'center', cursor: 'pointer', hover: { backgroundColor: C.overlayStrong } }}
         >
           <text style={{ fontSize: 12.5, color: C.text, fontFamily: FONT, whiteSpace: 'nowrap', pointerEvents: 'none' }}>{label}</text>
           <Icon name="chevronDown" size={13} color={C.muted} />
         </div>
-        <Menu open={menu.open} onClose={menu.close} align="end" width={300} testId="ai-model-menu">
-          <MenuItem label={`Default · ${fallback}`} checked={!chosen} onSelect={() => choose('')} testId="ai-model-default" />
+        <Menu open={menu.open} onClose={menu.close} align="end" width={300} testId={`${tid}-menu`}>
+          <MenuItem label={defaultLabel} checked={!chosen} onSelect={() => choose('')} testId={`${tid}-default`} />
           <MenuSeparator />
           <MenuLabel>{slot === 'codex' ? 'ChatGPT models' : slot === 'anthropic' ? 'Claude models on your key' : 'OpenAI models on your key'}</MenuLabel>
           <div style={{ maxHeight: 280, overflowY: 'scroll', display: 'flex', flexDirection: 'column' }}>
@@ -644,15 +728,15 @@ function ModelPicker({ slot, apiKey }: { slot: 'anthropic' | 'openai' | 'codex';
             ) : !list ? (
               <text style={{ fontSize: 12, color: C.muted, fontFamily: FONT, paddingLeft: 10, paddingTop: 4, paddingBottom: 6 }}>Loading…</text>
             ) : (
-              list.map((m) => <MenuItem key={m.id} label={m.label} hint={m.label !== m.id ? m.id : undefined} checked={chosen === m.id} onSelect={() => choose(m.id)} testId={`ai-model-${m.id}`} />)
+              list.map((m) => <MenuItem key={m.id} label={m.label} hint={m.label !== m.id ? m.id : undefined} checked={chosen === m.id} onSelect={() => choose(m.id)} testId={`${tid}-${m.id}`} />)
             )}
           </div>
           <MenuSeparator />
           <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6, paddingLeft: 6, paddingRight: 6, paddingTop: 4, paddingBottom: 4 }}>
             <div style={{ flexGrow: 1, minWidth: 0 }}>
-              <TextInput testId="ai-model-custom" value={custom} placeholder="Other model id" onChange={setCustom} onEnter={() => custom.trim() && choose(custom)} />
+              <TextInput testId={`${tid}-custom`} value={custom} placeholder="Other model id" onChange={setCustom} onEnter={() => custom.trim() && choose(custom)} />
             </div>
-            <Button label="Use" variant="ghost" disabled={!custom.trim()} onClick={() => choose(custom)} testId="ai-model-custom-use" />
+            <Button label="Use" variant="ghost" disabled={!custom.trim()} onClick={() => choose(custom)} testId={`${tid}-custom-use`} />
           </div>
         </Menu>
       </div>
@@ -1017,7 +1101,7 @@ function SignInSettings() {
   const customized = (Object.keys(ua) as Array<keyof SignInUserAgent>).some((key) => ua[key].trim() !== d[key])
   return (
     <>
-      <SectionLabel>Sign-in window</SectionLabel>
+      <Heading>Sign-in window</Heading>
       <SettingsCard>
         <SettingsRow title="Browser" sub="The browser the sign-in page thinks it's in">
           <SegmentedControl testId="signin-ua-family" value={ua.family} options={SIGN_IN_BROWSERS} onChange={(family) => set({ family })} />
@@ -1090,7 +1174,7 @@ function IntegrationSettings() {
   const cli = snippets.find((snippet) => snippet.id === 'cli')!
   return (
     <>
-      <SectionLabel>Integrations</SectionLabel>
+      <Heading>Integrations</Heading>
       <SettingsCard>
         <SettingsRow title="Allow AI apps to read Jefi (MCP)" sub="AI apps can read your mail, calendar and notes. Nothing is sent or changed without you">
           <Switch testId="toggle-mcp" value={settings.mcpEnabled} onChange={(mcpEnabled) => update({ mcpEnabled })} />
@@ -1114,18 +1198,44 @@ function IntegrationSettings() {
  * Settings, optionally scrolled to one section: jefi://settings/<section> asks for one, and `key`
  * changes with every request so asking for the same section again scrolls back to it.
  */
-export function SettingsPane({ onAddAccount, focus }: { onAddAccount: () => void; focus?: { section: SettingsSection; key: number } | null }) {
+/**
+ * Settings, one page at a time. The pages and their groups are in settings-pages.ts; the sidebar
+ * lists them (settings-sidebar.tsx), or, with the sidebar hidden, `nav` puts the list in the pane.
+ */
+export function SettingsPane({ onAddAccount, focus, nav = false }: { onAddAccount: () => void; focus?: { section: SettingsSection; key: number } | null; nav?: boolean }) {
   const { settings, update, C, windowStyle } = useSettings()
   countRender('SettingsPane')
   const { accounts, account: activeAccount, offline, setOffline, syncNow, sync, screenerOn, setScreener } = useMail()
+  const pageId = useSettingsPage()
   const renderer = useGpuixRequired()
-  const listRef = useRef<PublicInstance>(null)
-  const [range, setRange] = useState(() => settingsSectionWindow(focus?.section))
-  // The page is a virtual list of sections, so only those near the viewport are laid out while scrolling.
+  const scrollRef = useRef<PublicInstance>(null)
+  const sectionRefs = useRef(new Map<SettingsSection, PublicInstance | null>())
+  // A link or "Open Settings" button names a section: open the page that holds it, and when the
+  // section isn't the first thing there (Sign-in window under Accounts, say), scroll down to it.
+  useEffect(() => {
+    if (!focus) return
+    showSettingsPage(pageOf(focus.section))
+    // The page's scrollable height isn't known on its first layout (a scroll then is clamped to
+    // nothing), so this measures and scrolls a few times, like the calendar does, until it's there.
+    let done = false
+    const scrollToSection = () => {
+      const scroll = scrollRef.current
+      const target = sectionRefs.current.get(focus.section)
+      const box = scroll ? renderer.getElementBounds?.(scroll.id) : null
+      const at = target ? renderer.getElementBounds?.(target.id) : null
+      if (done || !scroll || !box || !at) return
+      const below = at.y - box.y
+      if (below <= 2) return void (done = true)
+      const offset = Math.abs(renderer.getScrollOffset?.(scroll.id)?.[1] ?? 0)
+      renderer.scrollTo?.(scroll.id, 0, -(offset + below))
+    }
+    const timers = [50, 250, 700, 1200].map((ms) => setTimeout(scrollToSection, ms))
+    return () => timers.forEach(clearTimeout)
+  }, [focus?.key])
   const nodes: Record<SettingsSection, ReactNode> = {
     appearance: (
       <>
-        <SectionLabel top={4}>Appearance</SectionLabel>
+        <Heading top={4}>Appearance</Heading>
         <SettingsCard>
           <div style={{ paddingTop: 12, paddingLeft: 14, paddingRight: 14, display: 'flex', flexDirection: 'row', gap: 10 }}>
             <ThemeCard name="dark" label="Dark" />
@@ -1159,7 +1269,7 @@ export function SettingsPane({ onAddAccount, focus }: { onAddAccount: () => void
     ),
     mailbox: (
       <>
-        <SectionLabel>Mailbox</SectionLabel>
+        <Heading>Mailbox</Heading>
         <SettingsCard>
           <SettingsRow title="Unread counts" sub="Show unread badges next to folders">
             <Switch
@@ -1191,12 +1301,12 @@ export function SettingsPane({ onAddAccount, focus }: { onAddAccount: () => void
             <Switch testId="toggle-snippets" value={settings.snippets} onChange={(value) => update({ snippets: value })} />
           </SettingsRow>
         </SettingsCard>
-        <KeyboardSettings />
       </>
     ),
+    keyboard: <KeyboardSettings />,
     privacy: (
       <>
-        <SectionLabel>Privacy and link protection</SectionLabel>
+        <Heading>Privacy and link protection</Heading>
         <SettingsCard>
           <RemoteImageRows />
           <CardDivider />
@@ -1210,7 +1320,7 @@ export function SettingsPane({ onAddAccount, focus }: { onAddAccount: () => void
     ),
     accounts: (
       <>
-        <SectionLabel>Accounts</SectionLabel>
+        <Heading>Accounts</Heading>
         <SettingsCard>
           {accounts.map((item, index) => (
             <div key={item.id}>
@@ -1237,11 +1347,8 @@ export function SettingsPane({ onAddAccount, focus }: { onAddAccount: () => void
         </SettingsCard>
       </>
     ),
-    ai: (
-      <>
-        <AiSettings />
-      </>
-    ),
+    ai: <AiSettings />,
+    cleanup: <CleanupSettings />,
     signin: (
       <>
         {inAppSignInAvailable ? <SignInSettings /> : null}
@@ -1249,7 +1356,7 @@ export function SettingsPane({ onAddAccount, focus }: { onAddAccount: () => void
     ),
     calendar: (
       <>
-        <SectionLabel>Calendar</SectionLabel>
+        <Heading>Calendar</Heading>
         <SettingsCard>
           <SettingsRow title="Event alerts" sub="For timed events that don't choose their own">
             <AlertPicker allDay={false} />
@@ -1267,7 +1374,7 @@ export function SettingsPane({ onAddAccount, focus }: { onAddAccount: () => void
     ),
     tasks: (
       <>
-        <SectionLabel>Tasks</SectionLabel>
+        <Heading>Tasks</Heading>
         <SettingsCard>
           <SettingsRow title="Task reminders" sub="For tasks due at a time that don't choose their own">
             <AlertPicker allDay={false} setting="defaultTaskAlert" testId="default-task-alert" />
@@ -1281,7 +1388,7 @@ export function SettingsPane({ onAddAccount, focus }: { onAddAccount: () => void
     ),
     sync: (
       <>
-        <SectionLabel>Sync</SectionLabel>
+        <Heading>Sync</Heading>
         <SettingsCard>
           <SettingsRow
             title="Sync now"
@@ -1304,7 +1411,7 @@ export function SettingsPane({ onAddAccount, focus }: { onAddAccount: () => void
     ),
     menubar: (
       <>
-        <SectionLabel>Menu bar</SectionLabel>
+        <Heading>Menu bar</Heading>
         <SettingsCard>
           <SettingsRow title="Keep Jefi in the menu bar" sub="Closing the window leaves Jefi running there, so mail keeps syncing and banners keep coming. Quit from its menu">
             <Switch testId="toggle-menu-bar" value={settings.menuBar} onChange={(menuBar) => update({ menuBar })} />
@@ -1332,7 +1439,7 @@ export function SettingsPane({ onAddAccount, focus }: { onAddAccount: () => void
     integrations: <IntegrationSettings />,
     about: (
       <>
-        <SectionLabel>About</SectionLabel>
+        <Heading>About</Heading>
         <SettingsCard>
           <div testId="about-brand" style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 14, paddingLeft: 14, paddingRight: 14, paddingTop: 14, paddingBottom: 14 }}>
             <img src={jefiAvatar(C.accent)} objectFit="contain" style={{ width: 52, height: 52, borderRadius: 12 }} />
@@ -1370,66 +1477,35 @@ export function SettingsPane({ onAddAccount, focus }: { onAddAccount: () => void
       </>
     ),
   }
-  const sections = SETTINGS_SECTIONS.map((key) => ({ key, node: nodes[key] }))
-
-  useEffect(() => {
-    if (!focus) return
-    const index = settingsSectionIndex(focus.section)
-    setRange(settingsSectionWindow(focus.section))
-    // The section's row has to be in the list before the list can scroll to it.
-    const timer = setTimeout(() => {
-      const list = listRef.current
-      if (list) renderer.scrollToItem?.(list.id, index, 0)
-    }, 16)
-    return () => clearTimeout(timer)
-  }, [focus?.key])
+  const page = settingsPage(pageId)
 
   return (
-    <div
-      testId="settings"
-      style={{
-        flexGrow: 1,
-        minWidth: 0,
-        height: '100%',
-        display: 'flex',
-        flexDirection: 'column',
-        backgroundColor: C.list,
-      }}
-    >
-      <div
-        style={{
-          height: TOPBAR_HEIGHT,
-          flexShrink: 0,
-          display: 'flex',
-          flexDirection: 'row',
-          alignItems: 'center',
-          paddingLeft: 20,
-          paddingRight: 16,
-          gap: 10,
-        }}
-      >
-        <Icon name="settings" size={17} color={C.secondary} />
-        <text style={{ fontSize: 19, fontWeight: 600, color: C.text, fontFamily: FONT }}>Settings</text>
-      </div>
-      <virtual-list
-        ref={listRef}
-        itemCount={sections.length}
-        estimatedItemHeight={320}
-        windowStart={range.start}
-        onVisibleRange={(event: { startIndex?: number; endIndex?: number }) => {
-          const start = Math.max(0, (event.startIndex ?? 0) - 1)
-          const end = Math.min(sections.length, (event.endIndex ?? 3) + 2)
-          if (start !== range.start || end !== range.end) setRange({ start, end })
-        }}
-        style={{ flexGrow: 1, minHeight: 0 }}
-        testId="settings-scroll"
-      >
-        {sections.slice(range.start, range.end).map((section) => (
-          <div key={section.key} style={{ width: '100%', flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', paddingBottom: section.key === 'about' ? 24 : 0 }}>
-            <div style={{ width: '100%', maxWidth: 640, paddingLeft: 24, paddingRight: 24, display: 'flex', flexDirection: 'column' }}>{section.node}</div>
+    <div testId="settings" style={{ flexGrow: 1, minWidth: 0, height: '100%', display: 'flex', flexDirection: 'row', backgroundColor: C.list }}>
+      {nav ? (
+        <div style={{ width: 220, flexShrink: 0, height: '100%', paddingTop: TOPBAR_HEIGHT - 14, display: 'flex', flexDirection: 'column', borderRightWidth: 1, borderColor: C.divider }}>
+          <SettingsNav />
+        </div>
+      ) : null}
+      <div style={{ flexGrow: 1, minWidth: 0, height: '100%', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ height: TOPBAR_HEIGHT, flexShrink: 0, display: 'flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingLeft: 24, paddingRight: 24 }}>
+          <div style={{ width: '100%', maxWidth: 640, paddingLeft: 24, paddingRight: 24, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <Icon name={page.icon} size={17} color={C.secondary} />
+            <text testId="settings-title" style={{ fontSize: 19, fontWeight: 600, color: C.text, fontFamily: FONT }}>{page.label}</text>
           </div>
-        ))}
-      </virtual-list>
+        </div>
+        {/* Keyed by page (and by link), so each opens at its top before scrolling to what was asked for. */}
+        <div key={`${pageId}-${focus?.key ?? ''}`} ref={scrollRef} testId="settings-scroll" style={{ flexGrow: 1, minHeight: 0, overflowY: 'scroll', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          <div testId={`settings-page-${pageId}`} style={{ width: '100%', maxWidth: 640, paddingLeft: 24, paddingRight: 24, paddingBottom: 32, display: 'flex', flexDirection: 'column' }}>
+            {page.sections.map((section, index) => (
+              <FirstOnPage.Provider key={section} value={index === 0}>
+                <div ref={(el: PublicInstance | null) => void sectionRefs.current.set(section, el)} testId={`settings-section-${section}`} style={{ display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+                  {nodes[section]}
+                </div>
+              </FirstOnPage.Provider>
+            ))}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

@@ -50,6 +50,8 @@ export const deleteRule = (db: MailDatabase, accountId: string, id: string) => v
 /** True when a rule would match everything: refuse those rather than archive a whole mailbox. */
 export const isEmptyMatch = (match: RuleMatch) => !match.from?.trim() && !match.to?.trim() && !match.subject?.trim() && !match.list && !match.hasAttachment
 
+const INBOX_SCOPE = `EXISTS (SELECT 1 FROM message_mailboxes mm JOIN mailboxes mb ON mb.id = mm.mailbox_id WHERE mm.message_id = m.id AND mb.special_use = '\\Inbox')`
+
 function whereFor(match: RuleMatch): { sql: string; args: Array<string | number> } {
   const parts: string[] = []
   const args: Array<string | number> = []
@@ -73,15 +75,20 @@ function whereFor(match: RuleMatch): { sql: string; args: Array<string | number>
 
 /**
  * Applies `rules` to the given messages (or, with `messageIds` null, to all mail in the Inbox).
- * Returns how many conversations each rule touched.
+ * Returns how many conversations each rule touched. All or nothing: a run that fails part-way (the
+ * database busy, say) leaves the mail as it was, so it can simply be run again.
  */
 export function applyRules(db: MailDatabase, accountId: string, rules: MailRule[], messageIds: number[] | null): Map<string, number> {
+  if (messageIds && messageIds.length === 0) return new Map()
+  return db.transaction(() => applyRulesNow(db, accountId, rules, messageIds))()
+}
+
+function applyRulesNow(db: MailDatabase, accountId: string, rules: MailRule[], messageIds: number[] | null): Map<string, number> {
   const touched = new Map<string, number>()
-  if (messageIds && messageIds.length === 0) return touched
   assignThreads(db, accountId)
   const scope = messageIds
     ? `m.id IN (${messageIds.map(() => '?').join(',')})`
-    : `EXISTS (SELECT 1 FROM message_mailboxes mm JOIN mailboxes mb ON mb.id = mm.mailbox_id WHERE mm.message_id = m.id AND mb.special_use = '\\Inbox')`
+    : INBOX_SCOPE
   const handled = new Set<string>()
   for (const rule of rules) {
     if (!rule.enabled || isEmptyMatch(rule.match)) continue
@@ -110,6 +117,20 @@ export function applyRules(db: MailDatabase, accountId: string, rules: MailRule[
     if (threads.length) touched.set(rule.id, threads.length)
   }
   return touched
+}
+
+/** What a rule would cover if run now: Inbox conversations it matches, and, when it asks for a mailing list, how many it would without that. */
+export type RuleMatchCount = { matches: number; withoutList: number | null }
+
+/** Counts with the same matching `applyRules` uses, so the editor's number is what Run now touches. */
+export function countRuleMatches(db: MailDatabase, accountId: string, match: RuleMatch): RuleMatchCount {
+  const count = (m: RuleMatch) => {
+    if (isEmptyMatch(m)) return 0
+    const where = whereFor(m)
+    return (db.query(`SELECT count(DISTINCT COALESCE(m.thread_id, 'm' || m.id)) AS n FROM messages m WHERE m.account_id = ? AND ${INBOX_SCOPE} AND ${where.sql}`).get(accountId, ...where.args) as { n: number }).n
+  }
+  const relaxed = match.list ? { ...match, list: false } : null
+  return { matches: count(match), withoutList: relaxed && !isEmptyMatch(relaxed) ? count(relaxed) : null }
 }
 
 /** Messages that arrived in the Inbox since `lastUid` (the Inbox's high-water mark before a sync). */

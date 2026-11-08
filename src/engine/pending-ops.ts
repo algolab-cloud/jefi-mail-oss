@@ -195,36 +195,126 @@ const isConnectionError = (err: unknown) => {
   return /^E(CONNRESET|PIPE|TIMEDOUT|CONNREFUSED|HOSTUNREACH|NETUNREACH)$|^NoConnection$/.test(String(e?.code)) || /closed|connection|socket|timed? ?out/i.test(String(e?.message))
 }
 
+/** Moves sent to the server in one command at most: big enough to clear a mass clean-up fast, small enough for one IMAP line. */
+const MOVE_BATCH = 200
+
+type Row = { id: number; payload_json: string; attempts: number }
+type MoveOp = Extract<PendingOp, { kind: 'move' }>
+
+/** The folder a queued move comes from, or null when it has nothing to move (already there, or no UID yet). */
+const moveSource = (op: PendingOp) => (op.kind === 'move' && op.locations.length ? (op.locations.find((l) => l.path !== op.target.path) ?? null) : null)
+
 export async function replayPendingOps(client: ImapFlow, db: MailDatabase, accountId: string): Promise<ReplayResult> {
-  const rows = db.query('SELECT id, payload_json, attempts FROM pending_ops WHERE account_id = ? ORDER BY id').all(accountId) as Array<{ id: number; payload_json: string; attempts: number }>
+  const rows = db.query('SELECT id, payload_json, attempts FROM pending_ops WHERE account_id = ? ORDER BY id').all(accountId) as Row[]
+  const ops = rows.map((row) => JSON.parse(row.payload_json) as PendingOp)
   let applied = 0
   let dropped = 0
   let gone = 0
   let labels = 0
   const resync = new Set<number>()
-  for (const row of rows) {
-    const op = JSON.parse(row.payload_json) as PendingOp
-    try {
-      const done = await apply(client, db, op)
+  const done = (row: Row, op: PendingOp, result: Applied | undefined) => {
+    db.run('DELETE FROM pending_ops WHERE id = ?', [row.id])
+    applied++
+    if (result?.gone) gone++
+    for (const id of result?.resync ?? []) resync.add(id)
+    if (op.kind === 'labels') labels++
+  }
+  /** False when the connection failed and the replay has to stop. */
+  const failed = (row: Row, err: unknown) => {
+    if (isConnectionError(err) || !client.usable) {
+      db.run('UPDATE pending_ops SET attempts = attempts + 1, last_error = ? WHERE id = ?', [String((err as Error)?.message ?? err), row.id])
+      return false
+    }
+    if (row.attempts + 1 >= MAX_ATTEMPTS) {
       db.run('DELETE FROM pending_ops WHERE id = ?', [row.id])
-      applied++
-      if (done?.gone) gone++
-      for (const id of done?.resync ?? []) resync.add(id)
-      if (op.kind === 'labels') labels++
+      dropped++
+    } else {
+      db.run('UPDATE pending_ops SET attempts = attempts + 1, last_error = ? WHERE id = ?', [String((err as Error)?.message ?? err), row.id])
+    }
+    return true
+  }
+  const single = async (index: number) => {
+    try {
+      done(rows[index]!, ops[index]!, await apply(client, db, ops[index]!))
+      return true
     } catch (err) {
-      if (isConnectionError(err) || !client.usable) {
-        db.run('UPDATE pending_ops SET attempts = attempts + 1, last_error = ? WHERE id = ?', [String((err as Error)?.message ?? err), row.id])
-        break
-      }
-      if (row.attempts + 1 >= MAX_ATTEMPTS) {
-        db.run('DELETE FROM pending_ops WHERE id = ?', [row.id])
-        dropped++
-      } else {
-        db.run('UPDATE pending_ops SET attempts = attempts + 1, last_error = ? WHERE id = ?', [String((err as Error)?.message ?? err), row.id])
-      }
+      return failed(rows[index]!, err)
     }
   }
+
+  for (let i = 0; i < rows.length; ) {
+    // A run of moves between the same two folders goes up as one MOVE (a mass archive or clean-up
+    // queues thousands); anything else, one at a time, in order.
+    const source = moveSource(ops[i]!)
+    let end = i + 1
+    if (source) {
+      const target = (ops[i] as MoveOp).target.path
+      const seen = new Set([source.uid])
+      while (end < rows.length && end - i < MOVE_BATCH) {
+        const next = ops[end]!
+        const from = moveSource(next)
+        if (!from || from.path !== source.path || (next as MoveOp).target.path !== target || seen.has(from.uid)) break
+        seen.add(from.uid)
+        end++
+      }
+    }
+    if (end - i === 1) {
+      if (!(await single(i))) break
+      i = end
+      continue
+    }
+    try {
+      const batch = ops.slice(i, end) as MoveOp[]
+      const results = await applyMoves(client, db, batch, batch.map((op) => moveSource(op)!))
+      results.forEach((result, k) => done(rows[i + k]!, batch[k]!, result))
+    } catch (err) {
+      if (isConnectionError(err) || !client.usable) {
+        failed(rows[i]!, err)
+        break
+      }
+      // Something about one of them: send them one by one, so only that one is held back.
+      let stop = false
+      for (let k = i; k < end && !stop; k++) stop = !(await single(k))
+      if (stop) break
+    }
+    i = end
+  }
   return { applied, dropped, remaining: pendingCount(db, accountId), resync, gone, labels }
+}
+
+/**
+ * Several moves from one folder to another, as one UID SEARCH and one UID MOVE. Each is settled as
+ * `apply` would settle it alone: gone when the server no longer has it, else linked to its new UID.
+ */
+async function applyMoves(client: ImapFlow, db: MailDatabase, batch: MoveOp[], sources: Location[]): Promise<Applied[]> {
+  const gmail = client.capabilities.has('X-GM-EXT-1')
+  const lock = await client.getMailboxLock(sources[0]!.path)
+  try {
+    const uids = sources.map((s) => s.uid)
+    const existing = new Set(await searchUids(client, { uid: uids.join(',') }))
+    const present = uids.filter((uid) => existing.has(uid))
+    const result = present.length ? await client.messageMove(present.join(','), batch[0]!.target.path, { uid: true }) : undefined
+    // In source-UID order, which is the order the server hands out the new UIDs: settleMove keeps the
+    // target's checkpoint moving forward one at a time.
+    const order = batch.map((_, k) => k).sort((a, b) => sources[a]!.uid - sources[b]!.uid)
+    const results: Applied[] = new Array(batch.length)
+    for (const k of order) {
+      const op = batch[k]!
+      const source = sources[k]!
+      if (!existing.has(source.uid)) {
+        settleMove(db, op, 'gone')
+        results[k] = { gone: true }
+        continue
+      }
+      const leftBehind = gmail ? [] : op.locations.filter((l) => l !== source && l.path !== op.target.path).map((l) => l.mailboxId)
+      const uid = result ? result.uidMap?.get(source.uid) : undefined
+      settleMove(db, op, uid ?? 'unknown', source)
+      results[k] = { resync: uid == null ? [op.target.mailboxId, ...leftBehind] : leftBehind }
+    }
+    return results
+  } finally {
+    lock.release()
+  }
 }
 
 async function apply(client: ImapFlow, db: MailDatabase, op: PendingOp): Promise<Applied | undefined> {
