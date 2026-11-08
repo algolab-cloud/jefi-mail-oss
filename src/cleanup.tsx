@@ -8,6 +8,11 @@ import { Spinner } from './toast'
 import { Tooltip } from './tooltip'
 import { Button } from './ui'
 import type { ScrubGroup, ScrubGroupBy, ScrubStats } from './engine/scrub'
+import { RowAction, ShareBar, TabChip, formatBytes, messageCount } from './cleanup-parts'
+import { SmartClean } from './cleanup-smart'
+import { subscribeSmartRequests, takeSmartRequest } from './smart-clean'
+
+export { formatBytes, messageCount }
 
 // ---------------------------------------------------------------------------
 // Clean up (Scrub): the mailbox grouped by sender, newsletter, age or size, with one-click
@@ -24,9 +29,6 @@ const TABS: Array<{ id: ScrubGroupBy; label: string; blurb: string }> = [
 
 const KEEP = [0, 1, 5]
 
-export const formatBytes = (bytes: number) =>
-  bytes <= 0 ? '0 KB' : bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : bytes >= 1024 ** 2 ? `${(bytes / 1024 ** 2).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`
-
 const ROW_HEIGHT = 55
 const WINDOW = 30
 const OVERDRAW = 10
@@ -36,7 +38,10 @@ export function CleanupPane() {
   const { scrubReport, scrubStats, scrub, unsubscribe, account } = useMail()
   const [stats, setStats] = useState<ScrubStats | null>(null)
   const [tab, setTab] = useState<ScrubGroupBy>('newsletters')
-  const [insights, setInsights] = useState(true)
+  // Insights and Smart are views of their own; the rest are reports grouped by `tab`.
+  const [view, setView] = useState<'insights' | 'smart' | 'report'>(() => (takeSmartRequest() ? 'smart' : 'insights'))
+  // "Review" on a scheduled clean-up's toast, while Clean up is already open.
+  useEffect(() => subscribeSmartRequests(() => takeSmartRequest() && setView('smart')), [])
   const [keep, setKeep] = useState(0)
   const [groups, setGroups] = useState<ScrubGroup[] | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
@@ -125,20 +130,21 @@ export function CleanupPane() {
   return (
     <div testId="cleanup" style={{ flexGrow: 1, minWidth: 0, height: '100%', display: 'flex', flexDirection: 'column', backgroundColor: C.list }}>
       <div style={{ height: TOPBAR_HEIGHT, flexShrink: 0, display: 'flex', flexDirection: 'row', alignItems: 'center', paddingLeft: 20, paddingRight: 16, gap: 10 }}>
-        <Icon name="sparkles" size={17} color={C.secondary} />
+        <Icon name="broom" size={17} color={C.secondary} />
         <text style={{ fontSize: 19, fontWeight: 600, color: C.text, fontFamily: FONT }}>Clean up</text>
       </div>
       <div style={{ flexGrow: 1, minHeight: 0, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
         <div style={{ width: '100%', maxWidth: 760, flexGrow: 1, minHeight: 0, paddingLeft: 24, paddingRight: 24, paddingBottom: 24, display: 'flex', flexDirection: 'column', gap: 14 }}>
           {/* Tabs */}
           <div style={{ display: 'flex', flexDirection: 'row', gap: 6, paddingTop: 6 }}>
-            <TabChip label="Insights" active={insights} onClick={() => setInsights(true)} testId="cleanup-tab-insights" />
+            <TabChip label="Insights" active={view === 'insights'} onClick={() => setView('insights')} testId="cleanup-tab-insights" />
+            <TabChip label="Smart" active={view === 'smart'} onClick={() => setView('smart')} testId="cleanup-tab-smart" />
             {TABS.map((t) => (
               <div
                 key={t.id}
                 testId={`cleanup-tab-${t.id}`}
                 onClick={() => {
-                  setInsights(false)
+                  setView('report')
                   setTab(t.id)
                 }}
                 style={{
@@ -149,16 +155,18 @@ export function CleanupPane() {
                   display: 'flex',
                   alignItems: 'center',
                   cursor: 'pointer',
-                  backgroundColor: !insights && tab === t.id ? C.chip : undefined,
+                  backgroundColor: view === 'report' && tab === t.id ? C.chip : undefined,
                   hover: { backgroundColor: C.overlay },
                 }}
               >
-                <text style={{ fontSize: 13, fontWeight: 500, color: !insights && tab === t.id ? C.text : C.secondary, fontFamily: FONT }}>{t.label}</text>
+                <text style={{ fontSize: 13, fontWeight: 500, color: view === 'report' && tab === t.id ? C.text : C.secondary, fontFamily: FONT }}>{t.label}</text>
               </div>
             ))}
           </div>
 
-          {insights ? (
+          {view === 'smart' ? (
+            <SmartClean />
+          ) : view === 'insights' ? (
             stats ? (
               <div style={{ flexGrow: 1, minHeight: 0, overflowY: 'scroll', display: 'flex', flexDirection: 'column' }}>
                 <Overview stats={stats} />
@@ -328,17 +336,6 @@ function PurgeConfirm({ group, keep, onCancel, onConfirm }: { group: ScrubGroup;
   )
 }
 
-function TabChip({ label, active, onClick, testId }: { label: string; active: boolean; onClick: () => void; testId: string }) {
-  const { C } = useSettings()
-  return (
-    <div testId={testId} onClick={onClick} style={{ height: 30, paddingLeft: 12, paddingRight: 12, borderRadius: 8, display: 'flex', alignItems: 'center', cursor: 'pointer', backgroundColor: active ? C.chip : undefined, hover: { backgroundColor: C.overlay } }}>
-      <text style={{ fontSize: 13, fontWeight: 500, color: active ? C.text : C.secondary, fontFamily: FONT }}>{label}</text>
-    </div>
-  )
-}
-
-export const messageCount = (n: number) => `${n.toLocaleString()} ${n === 1 ? 'message' : 'messages'}`
-
 /**
  * What "Delete forever" says it will do. A sender's group can keep its newest conversations (Keep
  * newest), and the age and size groups are described by their rule, not as someone mail is "from".
@@ -472,16 +469,6 @@ function Bars({ values, labels, names, testId }: { values: number[]; labels: str
   )
 }
 
-/** How this group compares with the biggest one in the list. */
-function ShareBar({ share }: { share: number }) {
-  const { C } = useSettings()
-  return (
-    <div style={{ width: 72, height: 4, borderRadius: 2, backgroundColor: C.chip, flexShrink: 0, display: 'flex', flexDirection: 'row' }}>
-      <div style={{ width: Math.max(3, Math.round(72 * share)), height: 4, borderRadius: 2, backgroundColor: C.accent }} />
-    </div>
-  )
-}
-
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const CHART_HEIGHT = 84
 
@@ -547,33 +534,6 @@ function Legend({ color, label }: { color: string; label: string }) {
     <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 5, flexShrink: 0 }}>
       <div style={{ width: 8, height: 8, borderRadius: 2, backgroundColor: color }} />
       <text style={{ fontSize: 11.5, color: C.secondary, fontFamily: FONT }}>{label}</text>
-    </div>
-  )
-}
-
-function RowAction({ label, onClick, danger, busy, testId }: { label: string; onClick: () => void; danger?: boolean; busy?: boolean; testId?: string }) {
-  const { C } = useSettings()
-  return (
-    <div
-      testId={testId}
-      onClick={busy ? undefined : onClick}
-      style={{
-        height: 28,
-        paddingLeft: 10,
-        paddingRight: 10,
-        borderRadius: 14,
-        flexShrink: 0,
-        display: 'flex',
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-        cursor: 'pointer',
-        backgroundColor: C.overlay,
-        hover: { backgroundColor: C.overlayStrong },
-      }}
-    >
-      {busy ? <Spinner size={12} color={C.accent} /> : null}
-      <text style={{ fontSize: 12.5, fontWeight: 500, color: danger ? C.accent : C.text, fontFamily: FONT, whiteSpace: 'nowrap' }}>{label}</text>
     </div>
   )
 }
