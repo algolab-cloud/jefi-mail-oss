@@ -15,6 +15,27 @@ export const FOLDER_NAMES: Record<FolderId, string> = {
   trash: 'Trash',
 }
 
+/**
+ * The toast for local changes the engine gave up on and undid ('changesDropped'), e.g. "Couldn't
+ * archive 3 messages — restored".
+ */
+export function droppedChangeMessage(change: { kind: 'flags' | 'move' | 'delete' | 'labels'; folder?: FolderId; count: number }): string {
+  const n = change.count === 1 ? '1 message' : `${change.count.toLocaleString()} messages`
+  const what =
+    change.kind === 'delete'
+      ? `delete ${n}`
+      : change.kind === 'flags'
+        ? `update ${n}`
+        : change.kind === 'labels'
+          ? `change the labels of ${n}`
+          : change.folder === 'archive'
+            ? `archive ${n}`
+            : change.folder
+              ? `move ${n} to ${FOLDER_NAMES[change.folder]}`
+              : `move ${n}`
+  return `Couldn't ${what} — restored`
+}
+
 /** The editor's rule for a draft: a new one (from scratch or a context menu) or an existing rule to edit. */
 export function ruleDraftFrom(draft: Partial<MailRule>, now = Date.now()): MailRule {
   return {

@@ -74,6 +74,8 @@ describe('mail database', () => {
     for (const table of ['task_label_links', 'task_labels', 'task_links', 'task_search', 'tasks', 'task_projects']) db.exec(`DROP TABLE ${table}`)
     db.exec('ALTER TABLE outbound_queue DROP COLUMN body_sent_at') // added by migration 27, which runs again
     db.exec('ALTER TABLE messages DROP COLUMN sign_in') // added by migration 28, which runs again
+    db.exec('DROP INDEX pending_ops_message') // made by migration 29, which runs again
+    db.exec('ALTER TABLE pending_ops DROP COLUMN message_id')
     db.exec('PRAGMA user_version = 19')
     migrate(db, MIGRATIONS.slice(0, 20))
     db.run("INSERT INTO tasks (id, uid, title, notes, status, priority, created_at, updated_at) VALUES ('a', 'ua', 'First', 'slides', 'open', 1, 1, 1), ('b', 'ub', 'Second', '', 'done', 0, 2, 2)")
@@ -99,6 +101,8 @@ describe('mail database', () => {
     db.exec('ALTER TABLE tasks DROP COLUMN alarms_json')
     db.exec('ALTER TABLE outbound_queue DROP COLUMN body_sent_at') // added by migration 27, which runs again
     db.exec('ALTER TABLE messages DROP COLUMN sign_in') // added by migration 28, which runs again
+    db.exec('DROP INDEX pending_ops_message') // made by migration 29, which runs again
+    db.exec('ALTER TABLE pending_ops DROP COLUMN message_id')
     db.exec('PRAGMA user_version = 21')
     db.run("INSERT INTO tasks (id, uid, number, title, created_at, updated_at) VALUES ('t', 'u', 1, 'Old', 1, 1)")
     expect(migrate(db)).toBe(MIGRATIONS.length)
@@ -109,6 +113,8 @@ describe('mail database', () => {
     const db = openDatabase(':memory:')
     db.exec('ALTER TABLE outbound_queue DROP COLUMN body_sent_at') // added by migration 27, which runs again
     db.exec('ALTER TABLE messages DROP COLUMN sign_in') // added by migration 28, which runs again
+    db.exec('DROP INDEX pending_ops_message') // made by migration 29, which runs again
+    db.exec('ALTER TABLE pending_ops DROP COLUMN message_id')
     db.exec('PRAGMA user_version = 22')
     db.run("INSERT INTO accounts (id, email, created_at) VALUES ('a', 'me@example.com', 1)")
     const message = (subject: string) => Number(db.run("INSERT INTO messages (account_id, subject, date) VALUES ('a', ?, 1)", [subject]).lastInsertRowid)
@@ -126,6 +132,8 @@ describe('mail database', () => {
     db.exec('DROP TABLE task_numbers')
     db.exec('ALTER TABLE outbound_queue DROP COLUMN body_sent_at') // added by migration 27, which runs again
     db.exec('ALTER TABLE messages DROP COLUMN sign_in') // added by migration 28, which runs again
+    db.exec('DROP INDEX pending_ops_message') // made by migration 29, which runs again
+    db.exec('ALTER TABLE pending_ops DROP COLUMN message_id')
     db.exec('PRAGMA user_version = 23')
     db.run("INSERT INTO tasks (id, uid, number, title, created_at, updated_at) VALUES ('a', 'ua', 4, 'A', 1, 1), ('b', 'ub', 7, 'B', 1, 1)")
     expect(migrate(db)).toBe(MIGRATIONS.length)
@@ -136,6 +144,8 @@ describe('mail database', () => {
     const db = openDatabase(':memory:')
     db.exec('ALTER TABLE outbound_queue DROP COLUMN body_sent_at')
     db.exec('ALTER TABLE messages DROP COLUMN sign_in') // added by migration 28, which runs again
+    db.exec('DROP INDEX pending_ops_message') // made by migration 29, which runs again
+    db.exec('ALTER TABLE pending_ops DROP COLUMN message_id')
     db.exec('PRAGMA user_version = 26')
     db.run("INSERT INTO accounts (id, email, created_at) VALUES ('a', 'me@example.com', 1)")
     db.run("INSERT INTO outbound_queue (id, account_id, mail_json, state, created_at, updated_at) VALUES ('o', 'a', '{}', 'failed', 1, 1)")
@@ -146,9 +156,29 @@ describe('mail database', () => {
   test('migration 28 adds sign_in to messages, empty for mail already stored', () => {
     const db = openDatabase(':memory:')
     db.exec('ALTER TABLE messages DROP COLUMN sign_in')
+    db.exec('DROP INDEX pending_ops_message') // made by migration 29, which runs again
+    db.exec('ALTER TABLE pending_ops DROP COLUMN message_id')
     db.exec('PRAGMA user_version = 27')
     expect(migrate(db)).toBe(MIGRATIONS.length)
     expect(db.query("SELECT name FROM pragma_table_info('messages') WHERE name = 'sign_in'").get()).toEqual({ name: 'sign_in' })
+  })
+
+  test('migration 29 indexes queued changes by message, for rows already queued and rows inserted without it', () => {
+    const db = openDatabase(':memory:')
+    db.exec('DROP INDEX pending_ops_message')
+    db.exec('ALTER TABLE pending_ops DROP COLUMN message_id')
+    db.exec('PRAGMA user_version = 28')
+    db.run("INSERT INTO accounts (id, email, created_at) VALUES ('a', 'me@example.com', 1)")
+    db.run(`INSERT INTO pending_ops (account_id, kind, payload_json, created_at) VALUES ('a', 'move', '{"kind":"move","messageId":42,"locations":[]}', 1)`)
+    expect(migrate(db)).toBe(MIGRATIONS.length)
+    // As an older build would insert it: no message_id given.
+    db.run(`INSERT INTO pending_ops (account_id, kind, payload_json, created_at) VALUES ('a', 'delete', '{"kind":"delete","messageId":7,"locations":[]}', 2)`)
+    expect(db.query('SELECT kind, message_id FROM pending_ops ORDER BY id').all()).toEqual([
+      { kind: 'move', message_id: 42 },
+      { kind: 'delete', message_id: 7 },
+    ])
+    const plan = db.query("EXPLAIN QUERY PLAN SELECT id FROM pending_ops WHERE account_id = 'a' AND message_id = 7").all() as Array<{ detail: string }>
+    expect(plan.map((p) => p.detail).join()).toContain('pending_ops_message')
   })
 
   test('one Gmail message in several labels is stored once', () => {

@@ -155,3 +155,94 @@ test('sender and Spam conversations are listed newest first, and a scrub leaves 
   expect(moves).toHaveLength(2)
   expect((await engine.senderThreads(id, ['news@deals.example'])).map((t) => t.subject)).toEqual(['Sale 2'])
 })
+
+/**
+ * A conversation that spans the clean-up's rule: a friend's message from over a year ago, a reply
+ * from someone else yesterday, and the person's own reply (old too) in Sent. Plus one more from the
+ * friend, recent and on its own, so they're a repeat sender in the report.
+ */
+async function conversationSetup() {
+  const DAY = 86_400_000
+  const ago = (days: number) => new Date(Date.now() - days * DAY)
+  const server = await startImapServer({
+    INBOX: [
+      { raw: rawMessage({ n: 1, fromName: 'Friend', fromEmail: 'friend@example.com', subject: 'Plans', messageId: '<plans@x>', date: ago(400) }) },
+      { raw: rawMessage({ n: 2, fromName: 'Other', fromEmail: 'other@example.com', subject: 'Re: Plans', messageId: '<plans-2@x>', inReplyTo: '<plans@x>', references: ['<plans@x>'], date: ago(1) }) },
+      { raw: rawMessage({ n: 4, fromName: 'Friend', fromEmail: 'friend@example.com', subject: 'Lunch', messageId: '<lunch@x>', date: ago(2) }) },
+    ],
+    Sent: {
+      'special-use': '\\Sent',
+      messages: [{ raw: rawMessage({ n: 3, fromName: 'Me', fromEmail: USER.user, subject: 'Re: Plans', messageId: '<plans-me@x>', inReplyTo: '<plans@x>', references: ['<plans@x>'], date: ago(399) }) }],
+    },
+    Trash: { 'special-use': '\\Trash', messages: [] },
+  })
+  const db = openDatabase(':memory:')
+  const engine = createImapEngine({ database: () => db, secrets: { get: async () => USER.pass, set: async () => {}, delete: async () => {} }, wake: false, watch: false })
+  const events: EngineEvent[] = []
+  engine.subscribe((batch) => events.push(...batch))
+  cleanups.push(() => server.close(), () => db.close(), () => engine.dispose())
+  engine.setAccounts([server.account])
+  engine.syncNow(server.account.id, true)
+  for (let i = 0; i < 200 && !events.some((e) => e.type === 'syncState' && e.state.status === 'idle'); i++) await Bun.sleep(20)
+  const id = server.account.id
+  const local = () => (db.query('SELECT subject, from_email AS sender FROM messages ORDER BY date').all() as Array<{ subject: string; sender: string }>).map((m) => `${m.sender}: ${m.subject}`)
+  const replayed = async () => {
+    for (let i = 0; i < 300; i++) {
+      if ((db.query('SELECT count(*) AS n FROM pending_ops').get() as { n: number }).n === 0) return
+      await Bun.sleep(20)
+    }
+    throw new Error('queue did not drain')
+  }
+  /** What the server holds, folder by folder, by Message-ID. */
+  const remote = async () => {
+    const client = await server.connect()
+    const out: Record<string, string[]> = {}
+    try {
+      for (const path of ['INBOX', 'Sent']) {
+        const lock = await client.getMailboxLock(path, { readOnly: true })
+        try {
+          const ids: string[] = []
+          if (client.mailbox && client.mailbox.exists > 0) for await (const m of client.fetch('1:*', { envelope: true })) ids.push(m.envelope?.messageId ?? '')
+          out[path] = ids.sort()
+        } finally {
+          lock.release()
+        }
+      }
+    } finally {
+      await client.logout()
+    }
+    return out
+  }
+  // The thread really is one conversation, with messages on both sides of the line.
+  const threads = db.query("SELECT count(DISTINCT thread_id) AS n FROM messages WHERE subject LIKE '%Plans'").get() as { n: number }
+  expect(threads.n).toBe(1)
+  return { engine, db, id, local, replayed, remote }
+}
+
+test('Delete forever by age erases only the old messages, not the newer replies in their conversations', async () => {
+  const { engine, id, local, replayed, remote } = await conversationSetup()
+  const year = (await engine.scrubReport(id, 'age')).find((g) => g.key === 'age:365')!
+  expect(year.messages).toBe(1)
+  const before = local().length
+
+  expect(await engine.scrub(id, { olderThanDays: 365 }, 'purge', 0)).toEqual([])
+  // Exactly as many as the confirmation said.
+  expect(before - local().length).toBe(year.messages)
+  expect(local()).toEqual(['me@example.com: Re: Plans', 'friend@example.com: Lunch', 'other@example.com: Re: Plans'])
+  await replayed()
+  // Yesterday's reply is still on the server, and so is the person's own (old) copy in Sent.
+  expect(await remote()).toEqual({ INBOX: ['<lunch@x>', '<plans-2@x>'], Sent: ['<plans-me@x>'] })
+})
+
+test('Delete forever by sender leaves other people’s messages and the person’s Sent copies alone', async () => {
+  const { engine, id, local, replayed, remote } = await conversationSetup()
+  const friend = (await engine.scrubReport(id, 'senders')).find((g) => g.detail === 'friend@example.com')!
+  expect(friend.messages).toBe(2)
+  const before = local().length
+
+  await engine.scrub(id, { sender: 'friend@example.com' }, 'purge', 0)
+  expect(before - local().length).toBe(friend.messages)
+  expect(local()).toEqual(['me@example.com: Re: Plans', 'other@example.com: Re: Plans'])
+  await replayed()
+  expect(await remote()).toEqual({ INBOX: ['<plans-2@x>'], Sent: ['<plans-me@x>'] })
+})

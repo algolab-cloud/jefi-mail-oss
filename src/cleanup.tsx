@@ -349,7 +349,9 @@ export function purgeCopy(group: Pick<ScrubGroup, 'label' | 'messages' | 'bytes'
     : kept
       ? `Everything from ${group.label} except its newest ${keep === 1 ? 'conversation' : `${keep} conversations`}`
       : `Everything from ${group.label}`
-  const body = `${what} is erased on the server as well as here, whole conversations included, and not moved to Trash, so there is nothing to restore it from. It frees ${kept ? 'up to ' : ''}${formatBytes(group.bytes)}.`
+  // Only the matching messages go (scrubMessageIds): replies in the same conversations that don't
+  // match, and your own copies in Sent and Drafts, stay.
+  const body = `${what} is erased on the server as well as here, and not moved to Trash, so there is nothing to restore it from. Other messages in the same conversations, and your copies in Sent and Drafts, are kept. It frees ${kept ? 'up to ' : ''}${formatBytes(group.bytes)}.`
   return { title, body }
 }
 const DAY = 86_400_000

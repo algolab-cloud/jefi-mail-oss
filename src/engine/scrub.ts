@@ -324,12 +324,7 @@ function addresses(json: string): string[] {
  * `inInbox` records where each lived, so Undo can put it back.
  */
 export function scrubTargets(db: MailDatabase, accountId: string, selector: ScrubSelector, keepLatest = 0, except: ReadonlySet<string> = new Set()): Array<{ threadId: string; inInbox: boolean }> {
-  const [where, value] =
-    'sender' in selector
-      ? ['lower(m.from_email) = ?2', selector.sender.toLowerCase()]
-      : 'olderThanDays' in selector
-        ? ['m.date < ?2', Date.now() - selector.olderThanDays * 86_400_000]
-        : ['COALESCE(m.size, 0) > ?2', selector.largerThanBytes]
+  const [where, value] = selectorWhere(selector)
   const rows = db
     .query(
       `SELECT m.thread_id, min(m.id) AS id, max(m.date) AS latest,
@@ -344,6 +339,32 @@ export function scrubTargets(db: MailDatabase, accountId: string, selector: Scru
     .slice(keepLatest)
     .map((r) => ({ threadId: uiThreadId(accountId, r.thread_id, r.id), inInbox: r.in_inbox === 1 }))
     .filter((target) => !except.has(target.threadId))
+}
+
+/** The SQL condition (bound to ?2) a selector picks messages by. */
+function selectorWhere(selector: ScrubSelector): [string, string | number] {
+  return 'sender' in selector
+    ? ['lower(m.from_email) = ?2', selector.sender.toLowerCase()]
+    : 'olderThanDays' in selector
+      ? ['m.date < ?2', Date.now() - selector.olderThanDays * 86_400_000]
+      : ['COALESCE(m.size, 0) > ?2', selector.largerThanBytes]
+}
+
+/**
+ * The messages a "Delete forever" erases: exactly those the selector matches (the ones the report
+ * counted), not every message in their conversations; a reply that came after the cut-off, or from
+ * someone else, stays. Conversations are still the unit for `keepLatest` and `except`, as for a move.
+ */
+export function scrubMessageIds(db: MailDatabase, accountId: string, selector: ScrubSelector, keepLatest = 0, except: ReadonlySet<string> = new Set()): number[] {
+  const [where, value] = selectorWhere(selector)
+  const rows = db
+    .query(`SELECT m.id, m.thread_id FROM messages m WHERE m.account_id = ?1 AND ${where} AND ${LIVE} ORDER BY m.date DESC, m.id DESC`)
+    .all(accountId, value) as Array<{ id: number; thread_id: string | null }>
+  const kept = new Set(scrubTargets(db, accountId, selector).slice(0, keepLatest).map((t) => t.threadId))
+  return rows.filter((r) => {
+    const threadId = uiThreadId(accountId, r.thread_id, r.id)
+    return !kept.has(threadId) && !except.has(threadId)
+  }).map((r) => r.id)
 }
 
 export type Unsubscribe = { oneClick: string | null; link: string | null; mailto: string | null }

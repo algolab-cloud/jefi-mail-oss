@@ -953,6 +953,16 @@ export const MIGRATIONS: string[] = [
   `
   ALTER TABLE messages ADD COLUMN sign_in TEXT;
   `,
+
+  // 29 — queued changes by message (pending_ops.message_id). Queueing a move looks for an earlier move
+  // of the same message to supersede, and syncs ask which messages have changes queued; both used to
+  // read and parse every queued op, so a clean-up of thousands was quadratic. A VIRTUAL generated
+  // column, so it is filled for rows already queued and for rows an older build inserts (which knows
+  // nothing of it). Additive: older builds ignore the column and the index.
+  `
+  ALTER TABLE pending_ops ADD COLUMN message_id INTEGER GENERATED ALWAYS AS (json_extract(payload_json, '$.messageId')) VIRTUAL;
+  CREATE INDEX pending_ops_message ON pending_ops (account_id, message_id);
+  `,
 ]
 
 /**

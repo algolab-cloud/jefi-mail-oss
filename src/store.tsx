@@ -1,7 +1,7 @@
 import { Profiler, createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { countCommit, countRender, renderCountsOn } from './render-counts'
 import { deepEqual, keepLoadedBodies, reuseUnchanged, sameItems, shallowEqual } from './store-equality'
-import { FOLDER_NAMES, mergeLabels, ruleDraftFrom, snoozeTime } from './store-pure'
+import { FOLDER_NAMES, droppedChangeMessage, mergeLabels, ruleDraftFrom, snoozeTime } from './store-pure'
 import type { Attachment, DraftFields, FolderId, Label, LabelTone, MailFolder, MailThread, Message } from './data'
 import { accountsToKeep, guessServers, initials, loadAccounts, saveAccounts, type Account } from './accounts'
 import { plainSnippet, recipientNames } from './markdown'
@@ -857,6 +857,11 @@ export function MailProvider({ children }: { children: ReactNode }) {
           setContactsVersion((v) => v + 1)
           break
         }
+        case 'changesDropped': {
+          // The engine already put things back as the server has them; say why they moved again.
+          for (const change of event.changes) toast.error(droppedChangeMessage(change), { description: accountById(accountId)?.email })
+          break
+        }
         case 'connection': {
           const needs = event.status === 'error' && !!event.needsSignIn
           // Offline says nothing about the credentials: keep what we knew.
@@ -1153,7 +1158,8 @@ export function MailProvider({ children }: { children: ReactNode }) {
     const moves = await engine.scrub(accountId, group.selector, action, keepLatest, except)
     // Purging returns nothing to undo, so the count comes from what the report said was there.
     if (action === 'purge') {
-      toast(`Deleting ${group.messages.toLocaleString()} messages from the server`, { description: group.label })
+      // The report's count is exactly what goes, unless the newest conversations are kept back.
+      toast(keepLatest > 0 ? 'Deleting from the server' : `Deleting ${group.messages.toLocaleString()} messages from the server`, { description: group.label })
       return group.messages
     }
     if (!moves.length) {

@@ -136,6 +136,9 @@ export async function syncMailbox(client: ImapFlow, db: MailDatabase, accountId:
         { uid: true, envelope: true, flags: true, size: true, internalDate: true, headers: ['references', 'list-unsubscribe', 'list-unsubscribe-post'], labels: gmail(client) },
         { uid: true },
       )) {
+        // Marked \Deleted and waiting for an expunge (ours, on a server without UIDPLUS: see
+        // deleteMessages; or another app's): as good as gone, so not brought back here.
+        if (message.flags?.has('\\Deleted')) continue
         batch.push(toSyncedMessage(message))
       }
       const result = storeBatch(db, accountId, { id: box.id, uidvalidity }, batch, { lastUid: checkpointUid, uidnext: knownNext, highestmodseq })
