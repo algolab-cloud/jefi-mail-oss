@@ -26,6 +26,7 @@ import { SettingsSidebar } from './settings-sidebar'
 import { CleanupPane } from './cleanup'
 import { useScheduledCleanup } from './cleanup-schedule'
 import { lockMailbox } from './instance-lock'
+import { hardenDataDir } from './data-dir'
 import { configDir } from './paths'
 import { requestSmartView } from './smart-clean'
 import { dispatchKey, isCmd, useKeys } from './keys'
@@ -1073,6 +1074,9 @@ const isEntryPoint =
 // One Jefi per mailbox: a second one (the installed app beside a dev build, say) brings the first
 // forward and closes before it opens a window or touches mail.db.
 const mailbox = isEntryPoint ? configDir() : null
+// Before anything reads or writes it: mail, accounts and settings are this user's alone (an older
+// build left the folder 0755 and its files 0644).
+if (mailbox) hardenDataDir(mailbox)
 if (mailbox && !lockMailbox(mailbox, { checkUnlocked: !process.env.JEFI_CONFIG_DIR })) process.exit(0)
 
 if (isEntryPoint) {

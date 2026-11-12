@@ -1,6 +1,5 @@
 import { Database } from 'bun:sqlite'
-import { mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { preparePrivateDatabase } from '../data-dir'
 import { configDir } from '../paths'
 
 // ---------------------------------------------------------------------------
@@ -989,7 +988,8 @@ export type MailDatabase = Database
 
 /** Opens (creating if needed) the mail database and brings its schema up to date. */
 export function openDatabase(path = defaultDatabasePath()): MailDatabase {
-  if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true })
+  // Owner-only: the folder, the database, and (through the database's mode) its -wal and -shm.
+  if (path !== ':memory:') preparePrivateDatabase(path)
   const db = new Database(path, { create: true, strict: true })
   db.exec('PRAGMA journal_mode = WAL')
   db.exec('PRAGMA foreign_keys = ON')

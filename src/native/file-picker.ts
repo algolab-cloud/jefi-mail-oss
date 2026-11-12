@@ -1,4 +1,5 @@
 import { describeFile } from '../attachment-files'
+import { quarantine } from '../engine/attachment-safety'
 import type { Attachment } from '../data'
 import { available, cls, fromNSString, msg, msgBool, msgIndex, msgInt, nsString } from './objc'
 import { constants } from 'node:fs'
@@ -112,8 +113,14 @@ export function pickAttachmentDirectory(): string {
   return msgInt(urls, 'count') > 0 ? fromNSString(msg(msgIndex(urls, 'objectAtIndex:', 0), 'path')) : ''
 }
 
-/** The Save panel already confirmed replacement, so this copies exactly to its chosen path. */
-export const saveAttachmentTo = (source: string, destination: string) => copyFile(source, destination)
+/**
+ * The Save panel already confirmed replacement, so this copies exactly to its chosen path. A copy
+ * doesn't carry the cached file's quarantine mark, so the saved file gets its own.
+ */
+export async function saveAttachmentTo(source: string, destination: string) {
+  await copyFile(source, destination)
+  await quarantine(destination)
+}
 
 /** Save All never overwrites an existing file; duplicate names gain a numeric suffix. */
 export async function saveAttachmentInDirectory(source: string, directory: string, name: string): Promise<string> {
@@ -124,6 +131,7 @@ export async function saveAttachmentInDirectory(source: string, directory: strin
     const destination = join(directory, copy ? `${stem} (${copy + 1})${extension}` : file)
     try {
       await copyFile(source, destination, constants.COPYFILE_EXCL)
+      await quarantine(destination)
       return destination
     } catch (error) {
       if ((error as { code?: string }).code !== 'EEXIST') throw error

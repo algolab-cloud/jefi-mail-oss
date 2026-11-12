@@ -739,7 +739,7 @@ export function createPhishingDatabase(options: CreatePhishingDatabaseOptions): 
             domains: [...feeds.domains],
             urls: [...feeds.urls],
           }
-          await mkdir(options.directory, { recursive: true })
+          await mkdir(options.directory, { recursive: true, mode: 0o700 })
           const temporaryPath = join(options.directory, `${SNAPSHOT_NAME}.${randomUUID()}.tmp`)
           try {
             await writeFile(temporaryPath, JSON.stringify(stored), { encoding: 'utf8', mode: 0o600 })

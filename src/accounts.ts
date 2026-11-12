@@ -216,11 +216,11 @@ export function saveAccounts(data: AccountsFile) {
   if (!file || file === stuckFile) return
   try {
     const fs = require('node:fs')
-    fs.mkdirSync(file.slice(0, file.lastIndexOf('/')), { recursive: true })
+    fs.mkdirSync(file.slice(0, file.lastIndexOf('/')), { recursive: true, mode: 0o700 })
     // Write beside it and rename over, so a crash mid-write leaves the old file rather than half a new one.
     const temp = `${file}.${process.pid}.tmp`
     try {
-      fs.writeFileSync(temp, `${JSON.stringify(data, null, 2)}\n`)
+      fs.writeFileSync(temp, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 })
       fs.renameSync(temp, file)
     } catch {
       fs.rmSync(temp, { force: true })

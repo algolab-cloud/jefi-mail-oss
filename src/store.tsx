@@ -13,6 +13,7 @@ import type { ScrubGroup, ScrubGroupBy, ScrubStats, SenderProfile, ThreadPeek } 
 import type { MailRule, RuleMatchCount } from './engine/rules'
 import type { ScrubMove, UnreadThread } from './engine/types'
 import { snoozeLabel } from './engine/snooze'
+import { openAttachmentFile } from './engine/attachment-safety'
 import { inboxUnreadCount, unreadBasis, type UnreadBasis } from './unread-count'
 import { sidebarCounts, type SidebarCounts } from './sidebar-counts'
 import { addToBurst, incomingThread, newMailCopy, type NewMailBurst } from './new-mail'
@@ -1693,9 +1694,11 @@ export function MailProvider({ children }: { children: ReactNode }) {
       void getAttachment(messageId, index, attachment).then(async (result) => {
         if (result.ok) {
           try {
-            const process = Bun.spawn(['open', result.attachment.path], { stdout: 'ignore', stderr: 'ignore' })
-            if (await process.exited === 0) toast.dismiss(id)
-            else toast.error(`Couldn't open ${attachment.name}`, { id, description: 'The system could not open this file.' })
+            // Quarantined, then opened; a file that could run something is only shown in Finder.
+            const opened = await openAttachmentFile(result.attachment.path)
+            if (opened.code !== 0) toast.error(`Couldn't open ${attachment.name}`, { id, description: 'The system could not open this file.' })
+            else if (opened.revealed) toast.info(`${attachment.name} is shown in Finder`, { id, description: 'Files like this can run programs or install software, so Jefi doesn\'t open them. Open it from Finder only if you trust the sender.' })
+            else toast.dismiss(id)
           } catch (error) {
             toast.error(`Couldn't open ${attachment.name}`, { id, description: error instanceof Error ? error.message : String(error) })
           }

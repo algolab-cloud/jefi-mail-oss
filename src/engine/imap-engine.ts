@@ -77,6 +77,7 @@ import type { DeliveryState, EngineEvent, EngineListener, GetAttachmentResult, G
 import { detectWake } from './wake'
 import { watchInbox, type InboxWatcher } from './watch'
 import { clearAttachmentCache, hasReadableCachedAttachment, resolveAttachmentTarget, sameAttachmentTarget, settleAttachmentSize } from './attachment-cache'
+import { openAttachmentFile } from './attachment-safety'
 import { clearOriginalCache, downloadOriginalMessage, hasReadableOriginal, resolveOriginalTarget } from './original-message'
 
 // ---------------------------------------------------------------------------
@@ -116,7 +117,7 @@ export type ImapEngineOptions = {
   draftSyncDelayMs?: number
   /** How often snoozes and scheduled sends are checked (default 30s). */
   schedulerMs?: number
-  /** Opens a downloaded attachment; defaults to macOS `open`. Tests capture the path instead. */
+  /** Opens a downloaded attachment; defaults to macOS `open` (risky types revealed in Finder). Tests capture the path instead. */
   openFile?: (path: string) => void
   /** Sleep detection; false turns it off. */
   wake?: { intervalMs?: number; toleranceMs?: number } | false
@@ -2088,5 +2089,8 @@ function unreachable(thread: MailThread): MailThread {
   }
 }
 
-/** Hands a downloaded file to macOS, which opens it in the person's default app for that type. */
-const openFile = (path: string) => void Bun.spawn(['open', path], { stdout: 'ignore', stderr: 'ignore' })
+/**
+ * Hands a downloaded file to macOS, which opens it in the person's default app for that type, or
+ * shows it in Finder when opening it could run something (see attachment-safety.ts).
+ */
+const openFile = (path: string) => void openAttachmentFile(path).catch(() => {})

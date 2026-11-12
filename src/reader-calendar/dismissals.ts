@@ -29,8 +29,8 @@ function save(list: string[]) {
   if (!dir) return
   try {
     const fs = require('node:fs') as typeof import('node:fs')
-    fs.mkdirSync(dir, { recursive: true })
-    fs.writeFileSync(`${dir}/${FILE}`, `${JSON.stringify({ dismissed: list })}\n`)
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+    fs.writeFileSync(`${dir}/${FILE}`, `${JSON.stringify({ dismissed: list })}\n`, { mode: 0o600 })
   } catch {
     // Not worth a toast: at worst the strip comes back next launch.
   }
