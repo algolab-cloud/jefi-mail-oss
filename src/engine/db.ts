@@ -1,6 +1,7 @@
 import { Database } from 'bun:sqlite'
 import { preparePrivateDatabase } from '../data-dir'
 import { configDir } from '../paths'
+import { backupBeforeMigrating } from './db-backup'
 
 // ---------------------------------------------------------------------------
 // The engine's local store: source of truth for synced mail, opened only by the engine worker.
@@ -1039,6 +1040,8 @@ export function migrate(db: MailDatabase, migrations = MIGRATIONS): number {
     acceptNewerSchema(db, current, migrations)
     return migrations.length
   }
+  // A copy of the mailbox as it was, before any migration touches it (none for a new one).
+  if (current > 0 && current < migrations.length) backupBeforeMigrating(db, current)
   for (let version = current + 1; version <= migrations.length; version++) {
     db.transaction(() => {
       db.exec(migrations[version - 1]!)

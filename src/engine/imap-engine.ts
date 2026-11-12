@@ -65,6 +65,7 @@ import { OAuthError, signIn } from './oauth'
 import { MissingSecretError, keychainSecrets, type SecretStore } from './secrets'
 import { downloadAttachment, fetchBodiesOf, headerValue, syncAccount, syncMailbox } from './sync'
 import { parseUnsubscribe, scrubMessageIds, scrubReport, scrubStats, scrubTargets, senderProfiles, senderThreads, spamThreads, unsubscribeOptions } from './scrub'
+import { postOneClickUnsubscribe } from './unsubscribe-url'
 import { searchThreads } from './search'
 import { applyRules, countRuleMatches, deleteRule, isEmptyMatch, listRules, newInboxMessageIds, saveRule } from './rules'
 import { blockedSenders, screenerEnabledAt, setScreener, setVerdict } from './screener'
@@ -1640,21 +1641,8 @@ export function createImapEngine(options: ImapEngineOptions = {}): MailEngine {
         }
       }
       if (!options) return { ok: false, error: "This sender doesn't offer an unsubscribe link" }
-      if (options.oneClick) {
-        try {
-          const response = await fetch(options.oneClick, {
-            method: 'POST',
-            headers: { 'content-type': 'application/x-www-form-urlencoded' },
-            body: 'List-Unsubscribe=One-Click',
-            redirect: 'follow',
-            // A sender's server that never answers mustn't leave Unsubscribe spinning.
-            signal: AbortSignal.timeout(15_000),
-          })
-          if (response.ok) return { ok: true, done: true }
-        } catch {
-          // Try the other ways below.
-        }
-      }
+      // Only to a public https host, never following a redirect; otherwise try the other ways below.
+      if (options.oneClick && (await postOneClickUnsubscribe(options.oneClick)) === 'done') return { ok: true, done: true }
       if (options.mailto) return { ok: true, done: false, mailto: options.mailto }
       if (options.link) return { ok: true, done: false, link: options.link }
       return { ok: false, error: "Couldn't reach the sender's unsubscribe page" }

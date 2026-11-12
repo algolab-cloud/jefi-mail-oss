@@ -1,5 +1,6 @@
 import type { MailDatabase } from './db'
 import { uiThreadId } from './threading'
+import { isSafeUnsubscribeUrl } from './unsubscribe-url'
 
 // ---------------------------------------------------------------------------
 // Scrub: clean-up reports over the local database (instant even on large mailboxes) and the
@@ -383,5 +384,6 @@ export function unsubscribeOptions(db: MailDatabase, accountId: string, sender: 
 export function parseUnsubscribe(value: string, post: boolean): Unsubscribe {
   const targets = [...value.matchAll(/<([^>]+)>/g)].map((m) => m[1]!.trim())
   const link = targets.find((t) => /^https:/i.test(t)) ?? null
-  return { oneClick: post && link ? link : null, link, mailto: targets.find((t) => /^mailto:/i.test(t)) ?? null }
+  // One-click POSTs without asking, so only to a public host; any other link is left for the person to open.
+  return { oneClick: post && link && isSafeUnsubscribeUrl(link) ? link : null, link, mailto: targets.find((t) => /^mailto:/i.test(t)) ?? null }
 }
