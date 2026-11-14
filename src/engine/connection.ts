@@ -1,5 +1,5 @@
 import { isIP } from 'node:net'
-import { ImapFlow, type ImapFlowOptions, type MessageRangeOptions, type SearchObject } from 'imapflow'
+import { ImapFlow, type ImapFlowOptions, type MessageRangeOptions, type SearchObject, type StoreOptions } from 'imapflow'
 import nodemailer from 'nodemailer'
 import type { Account } from '../accounts'
 import type { Credentials } from './credentials'
@@ -87,6 +87,69 @@ export function createImapClient(account: Account, secret: Secret, options: Conn
 export async function searchUids(client: ImapFlow, query: SearchObject, options: MessageRangeOptions = { uid: true }): Promise<number[]> {
   const result = await client.search(query, options)
   if (!Array.isArray(result)) throw new Error(`IMAP search failed for ${JSON.stringify(query)} (dropped connection, or a NO/BAD from the server)`)
+  return result
+}
+
+// The same for the commands that change mail. messageMove, messageDelete, messageFlagsAdd/Remove and
+// append answer a NO/BAD, or a connection that dropped mid-command, with `false` instead of throwing
+// (node_modules/imapflow/dist/esm/commands/{move,expunge,store,append}.js). Taken as success, a
+// refused change is forgotten and the message comes back on the next sync. These throw instead, so
+// the caller's retry path sees it. Only `false` is a failure: `undefined` (nothing to do, e.g. an
+// empty range) still resolves. The message deliberately doesn't say "connection": whether the
+// connection is still usable is for the caller to judge (client.usable), not this text.
+const refused = (command: string, range: unknown, where: string) => {
+  const uids = String(range)
+  return new Error(`IMAP ${command} of ${uids.length > 60 ? `${uids.slice(0, 60)}…` : uids} in ${where} was refused or did not complete`)
+}
+const selected = (client: ImapFlow) => (client.mailbox ? client.mailbox.path : 'no mailbox')
+
+export async function moveMessages(client: ImapFlow, range: string, destination: string, options: MessageRangeOptions = { uid: true }) {
+  // Without MOVE imapflow copies and then calls its own messageDelete, a plain EXPUNGE without
+  // UIDPLUS (see deleteMessages). Do the same steps here so the delete takes the safe path.
+  if (!client.capabilities.has('MOVE')) {
+    const copied = await client.messageCopy(range, destination, options)
+    if (copied === false) throw refused(`COPY to ${destination}`, range, selected(client))
+    if (!copied) return copied
+    await deleteMessages(client, range, options)
+    return copied
+  }
+  const result = await client.messageMove(range, destination, options)
+  if (result === false) throw refused(`MOVE to ${destination}`, range, selected(client))
+  return result
+}
+
+/**
+ * Delete messages from the selected folder. With UIDPLUS that's \Deleted plus UID EXPUNGE of exactly
+ * these UIDs. Without it imapflow would fall back to a plain EXPUNGE, which also erases every message
+ * another mail app has marked \Deleted in the folder and not expunged yet (an "undo delete" it still
+ * offers, say). Not worth that risk: they're only marked \Deleted, the expunge is left to the server
+ * or a client that can do it safely, and sync treats a message marked \Deleted as gone.
+ */
+export async function deleteMessages(client: ImapFlow, range: string, options: MessageRangeOptions = { uid: true }) {
+  if (!client.capabilities.has('UIDPLUS')) {
+    await addFlags(client, range, ['\\Deleted'], { uid: !!options.uid })
+    return true
+  }
+  const result = await client.messageDelete(range, options)
+  if (result === false) throw refused('delete', range, selected(client))
+  return result
+}
+
+export async function addFlags(client: ImapFlow, range: string, flags: string[], options: StoreOptions = { uid: true }) {
+  const result = await client.messageFlagsAdd(range, flags, options)
+  if (result === false) throw refused(`STORE +${options.useLabels ? 'X-GM-LABELS' : 'FLAGS'} ${flags.join(' ')}`, range, selected(client))
+  return result
+}
+
+export async function removeFlags(client: ImapFlow, range: string, flags: string[], options: StoreOptions = { uid: true }) {
+  const result = await client.messageFlagsRemove(range, flags, options)
+  if (result === false) throw refused(`STORE -${options.useLabels ? 'X-GM-LABELS' : 'FLAGS'} ${flags.join(' ')}`, range, selected(client))
+  return result
+}
+
+export async function appendMessage(client: ImapFlow, path: string, raw: Buffer, flags: string[], date: Date) {
+  const result = await client.append(path, raw, flags, date)
+  if (result === false) throw new Error(`IMAP APPEND to ${path} was refused or did not complete`)
   return result
 }
 

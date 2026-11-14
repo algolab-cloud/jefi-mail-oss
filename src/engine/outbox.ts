@@ -5,6 +5,7 @@ import MailComposer from 'nodemailer/lib/mail-composer'
 import type { Account } from '../accounts'
 import type { DraftFields } from '../data'
 import { fileProblemMessage, readProblem, type FileProblem } from '../attachment-files'
+import { appendMessage } from './connection'
 import type { MailDatabase } from './db'
 import type { OutgoingCalendar, OutgoingMessage, ReplyHeaders } from './mime'
 
@@ -329,6 +330,7 @@ export function unreadableAttachment(message: OutgoingMessage): { filename: stri
 
 export const unreadableAttachmentError = (file: { filename: string; problem: FileProblem }) => fileProblemMessage(file.filename, file.problem)
 
+/** Rejects when the server refuses the APPEND too (imapflow resolves that with false). */
 export async function appendToSent(client: ImapFlow, sentPath: string, raw: Buffer, date: Date) {
-  await client.append(sentPath, raw, ['\\Seen'], date)
+  await appendMessage(client, sentPath, raw, ['\\Seen'], date)
 }

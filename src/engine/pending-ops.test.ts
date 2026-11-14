@@ -309,6 +309,24 @@ test('the server wins: an op for a message already gone there is dropped, not re
   expect((await serverState(server)).Archive).toEqual({})
 })
 
+test('a change given up on is announced, and undone, rather than silently reverted by the next sync', async () => {
+  const { server, db, engine, events, accountId } = await setup()
+  engine.setOffline(true)
+  engine.move(accountId, threadId(db, accountId, 'First'), 'archive')
+  engine.setOffline(false)
+  // The Inbox is rebuilt on the server before the move goes up: its UID no longer means this message.
+  server.renumber('INBOX', 999)
+  const mark = events.length
+  await syncAndWait(engine, events, server)
+  expect(pendingCount(db, accountId)).toBe(0)
+  expect(events.slice(mark).filter((e) => e.type === 'changesDropped')).toEqual([{ type: 'changesDropped', accountId, changes: [{ kind: 'move', folder: 'archive', count: 1 }] }])
+  // Nothing was moved on the server, and the message is back where the server has it.
+  const state = await serverState(server)
+  expect(Object.keys(state.INBOX!).sort()).toEqual(['First', 'Second'])
+  expect(state.Archive).toEqual({})
+  expect(linksOf(db, 'First')).toEqual([{ path: 'INBOX', uid: expect.any(Number) }])
+})
+
 test('a failed connection keeps the queue for the next attempt', async () => {
   const { server, db, engine, events, accountId } = await setup()
   await server.pause()

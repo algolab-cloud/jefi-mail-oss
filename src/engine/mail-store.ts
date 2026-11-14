@@ -178,7 +178,7 @@ export function storeBatch(db: MailDatabase, accountId: string, mailbox: { id: n
      ON CONFLICT (mailbox_id, uid) DO UPDATE SET message_id = excluded.message_id, modseq = excluded.modseq`,
   )
 
-  // Once per batch, not per message: each lookup parses every queued op.
+  // Once per batch, not per message: each lookup reads the whole queue.
   const pendingLabels = messages.some((m) => m.labels) ? messagesWithPendingOps(db, accountId, 'labels') : new Set<number>()
   const result: StoreResult = { stored: 0, skipped: [] }
   // Each message's conversation is rebuilt once at the end of the batch, not on every insert and link.
@@ -251,7 +251,7 @@ export const userLabels = (labels: Iterable<string>) => [...labels].filter((l) =
  * caller has checked). Returns whether they changed.
  */
 export function setMessageLabels(db: MailDatabase, accountId: string, messageId: number, labels: string[], options: { force?: boolean } = {}): boolean {
-  if (!options.force && messagesWithPendingOps(db, accountId, 'labels').has(messageId)) return false
+  if (!options.force && db.query("SELECT 1 FROM pending_ops WHERE account_id = ? AND message_id = ? AND kind = 'labels'").get(accountId, messageId)) return false
   // Already these labels (every sync of a second Gmail folder, most flag refreshes): rewriting them
   // would only fire the list-revision triggers for a change nobody can see.
   const next = new Set(userLabels(labels))
@@ -269,12 +269,13 @@ export function labelsOf(db: MailDatabase, messageId: number): string[] {
 
 /** Messages with local changes still queued for the server; syncs must not overwrite them. */
 export function messagesWithPendingOps(db: MailDatabase, accountId: string, kind?: string): Set<number> {
+  // pending_ops.message_id (migration 29): no queued payload parsed, however long the queue.
   const rows = (
     kind
-      ? db.query('SELECT payload_json FROM pending_ops WHERE account_id = ? AND kind = ?').all(accountId, kind)
-      : db.query('SELECT payload_json FROM pending_ops WHERE account_id = ?').all(accountId)
-  ) as Array<{ payload_json: string }>
-  return new Set(rows.map((r) => (JSON.parse(r.payload_json) as { messageId: number }).messageId))
+      ? db.query('SELECT DISTINCT message_id FROM pending_ops WHERE account_id = ? AND kind = ?').all(accountId, kind)
+      : db.query('SELECT DISTINCT message_id FROM pending_ops WHERE account_id = ?').all(accountId)
+  ) as Array<{ message_id: number }>
+  return new Set(rows.map((r) => r.message_id))
 }
 
 /** Server messages this folder holds: links (placeholders of a queued move have negative UIDs) plus duplicate-copy aliases. */

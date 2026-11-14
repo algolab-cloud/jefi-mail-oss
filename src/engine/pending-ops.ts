@@ -1,7 +1,7 @@
 import type { ImapFlow } from 'imapflow'
 import type { FolderId } from '../data'
-import { searchUids } from './connection'
-import type { MailDatabase } from './db'
+import { addFlags, deleteMessages, moveMessages, removeFlags, searchUids } from './connection'
+import { deferConversations, type MailDatabase } from './db'
 import { deleteOrphanMessages, labelsOf, setMessageLabels } from './mail-store'
 import { threadMessageIds } from './threading'
 
@@ -13,7 +13,12 @@ import { threadMessageIds } from './threading'
 // network failure stops the replay and keeps the queue.
 // ---------------------------------------------------------------------------
 
-type Location = { mailboxId: number; path: string; uid: number }
+/**
+ * Where the server had a message when the change was made. `uidvalidity` is the folder's UIDVALIDITY
+ * then: a UID only means this message while it holds (rows queued before it was recorded have none,
+ * and replay as they always did).
+ */
+type Location = { mailboxId: number; path: string; uid: number; uidvalidity?: number | null }
 
 export type PendingOp =
   | { kind: 'flags'; messageId: number; locations: Location[]; add: string[]; remove: string[] }
@@ -36,18 +41,19 @@ const TARGET_USES: Partial<Record<FolderId, string[]>> = {
 const locationsOf = (db: MailDatabase, messageId: number): Location[] =>
   (
     db
-      .query('SELECT mm.mailbox_id, mb.path, mm.uid FROM message_mailboxes mm JOIN mailboxes mb ON mb.id = mm.mailbox_id WHERE mm.message_id = ? AND mm.uid > 0')
-      .all(messageId) as Array<{ mailbox_id: number; path: string; uid: number }>
-  ).map((r) => ({ mailboxId: r.mailbox_id, path: r.path, uid: r.uid }))
+      .query('SELECT mm.mailbox_id, mb.path, mm.uid, mb.uidvalidity FROM message_mailboxes mm JOIN mailboxes mb ON mb.id = mm.mailbox_id WHERE mm.message_id = ? AND mm.uid > 0')
+      .all(messageId) as Array<{ mailbox_id: number; path: string; uid: number; uidvalidity: number | null }>
+  ).map((r) => ({ mailboxId: r.mailbox_id, path: r.path, uid: r.uid, uidvalidity: r.uidvalidity }))
 
 /**
  * Where the server still has the message. If an unsent move is queued for it, the local links are
  * placeholders, so take that move's locations and supersede it (the new op carries the intent).
+ * Found by pending_ops.message_id (indexed, migration 29), not by parsing the whole queue.
  */
 const serverLocations = (db: MailDatabase, accountId: string, messageId: number): Location[] => {
-  const earlier = (
-    db.query("SELECT id, payload_json FROM pending_ops WHERE account_id = ? AND kind = 'move' ORDER BY id DESC").all(accountId) as Array<{ id: number; payload_json: string }>
-  ).find((row) => (JSON.parse(row.payload_json) as PendingOp).messageId === messageId)
+  const earlier = db
+    .query("SELECT id, payload_json FROM pending_ops WHERE account_id = ? AND message_id = ? AND kind = 'move' ORDER BY id DESC LIMIT 1")
+    .get(accountId, messageId) as { id: number; payload_json: string } | null
   if (!earlier) return locationsOf(db, messageId)
   db.run('DELETE FROM pending_ops WHERE id = ?', [earlier.id])
   return (JSON.parse(earlier.payload_json) as Extract<PendingOp, { kind: 'move' }>).locations
@@ -66,25 +72,25 @@ export function pendingCount(db: MailDatabase, accountId: string) {
  * here in the meantime (lume-75z.7 gap-fill would otherwise resurrect a message mid-move).
  */
 export function pendingAwayUids(db: MailDatabase, accountId: string, mailboxId: number): Set<number> {
-  const rows = db.query("SELECT payload_json FROM pending_ops WHERE account_id = ? AND kind IN ('move', 'delete')").all(accountId) as Array<{ payload_json: string }>
-  const uids = new Set<number>()
-  for (const row of rows) {
-    const op = JSON.parse(row.payload_json) as Extract<PendingOp, { kind: 'move' | 'delete' }>
-    for (const location of op.locations) if (location.mailboxId === mailboxId) uids.add(location.uid)
-  }
-  return uids
+  // Read inside SQLite (json_each), not by parsing every queued op in JS: the queue can hold thousands.
+  const rows = db
+    .query(
+      `SELECT DISTINCT json_extract(l.value, '$.uid') AS uid FROM pending_ops p, json_each(p.payload_json, '$.locations') l
+        WHERE p.account_id = ? AND p.kind IN ('move', 'delete') AND json_extract(l.value, '$.mailboxId') = ?`,
+    )
+    .all(accountId, mailboxId) as Array<{ uid: number }>
+  return new Set(rows.map((r) => r.uid))
 }
 
 /** Mailboxes a queued op still has to touch (its sources, and a move's target). */
 export function pendingMailboxIds(db: MailDatabase, accountId: string): Set<number> {
-  const rows = db.query('SELECT payload_json FROM pending_ops WHERE account_id = ?').all(accountId) as Array<{ payload_json: string }>
-  const ids = new Set<number>()
-  for (const row of rows) {
-    const op = JSON.parse(row.payload_json) as PendingOp
-    for (const location of op.locations) ids.add(location.mailboxId)
-    if (op.kind === 'move') ids.add(op.target.mailboxId)
-  }
-  return ids
+  const rows = db
+    .query(
+      `SELECT json_extract(l.value, '$.mailboxId') AS id FROM pending_ops p, json_each(p.payload_json, '$.locations') l WHERE p.account_id = ?1
+       UNION SELECT json_extract(p.payload_json, '$.target.mailboxId') FROM pending_ops p WHERE p.account_id = ?1 AND p.kind = 'move'`,
+    )
+    .all(accountId) as Array<{ id: number }>
+  return new Set(rows.map((r) => r.id))
 }
 
 // --- Local apply + enqueue ---------------------------------------------------------------------
@@ -112,30 +118,53 @@ export function queueFlags(db: MailDatabase, accountId: string, threadId: string
  * Returns false when the folder has no server counterpart (the UI keeps the change local).
  */
 export function queueMove(db: MailDatabase, accountId: string, threadId: string, folder: FolderId): boolean {
+  return queueMoves(db, accountId, [threadId], folder).length > 0
+}
+
+/**
+ * queueMove for many conversations at once (a clean-up, a blocked sender): one transaction, with the
+ * folder list read once. Returns the conversations it moved.
+ */
+export function queueMoves(db: MailDatabase, accountId: string, threadIds: readonly string[], folder: FolderId): string[] {
   const uses = TARGET_USES[folder]
-  const all = threadMessageIds(db, accountId, threadId)
-  if (all.length === 0 || !uses) return false
+  if (!uses || threadIds.length === 0) return []
   const boxes = db.query('SELECT id, path, special_use FROM mailboxes WHERE account_id = ?').all(accountId) as Array<{ id: number; path: string; special_use: string | null }>
   const target = uses.map((use) => boxes.find((b) => b.special_use === use)).find(Boolean)
-  if (!target) return false
+  if (!target) return []
 
-  const ownCopy = db.prepare(
+  const own = ownCopyCheck(db)
+  const moved: string[] = []
+  inBulk(db, threadIds.length, () => {
+    for (const threadId of threadIds) {
+      const all = threadMessageIds(db, accountId, threadId)
+      if (all.length === 0) continue
+      const movable = all.filter((id) => !own(id))
+      for (const messageId of movable.length > 0 ? movable : all) {
+        const locations = serverLocations(db, accountId, messageId)
+        enqueue(db, accountId, { kind: 'move', messageId, locations, target: { mailboxId: target.id, path: target.path } })
+        // Show it in the target folder now, under a placeholder UID until the server assigns one.
+        db.run('DELETE FROM message_mailboxes WHERE message_id = ?', [messageId])
+        db.run('INSERT INTO message_mailboxes (mailbox_id, uid, message_id) VALUES (?, ?, ?)', [target.id, -messageId, messageId])
+      }
+      moved.push(threadId)
+    }
+  })
+  return moved
+}
+
+/**
+ * One transaction for the lot. Many at once (a clean-up) also rebuilds each conversation's summary
+ * once at the end instead of on every link rewritten; for one, that flush costs more than it saves.
+ */
+const inBulk = (db: MailDatabase, count: number, work: () => void) => (count > 1 ? deferConversations(db, work) : db.transaction(work)())
+
+/** Whether a message is only the person's own copy: every folder holding it is Sent or Drafts. */
+const ownCopyCheck = (db: MailDatabase) => {
+  const query = db.prepare(
     `SELECT NOT EXISTS (SELECT 1 FROM message_mailboxes mm JOIN mailboxes mb ON mb.id = mm.mailbox_id
       WHERE mm.message_id = ? AND COALESCE(mb.special_use, '') NOT IN ('\\Sent', '\\Drafts')) AS own`,
   )
-  const movable = all.filter((id) => !(ownCopy.get(id) as { own: number }).own)
-  const messageIds = movable.length > 0 ? movable : all
-
-  db.transaction(() => {
-    for (const messageId of messageIds) {
-      const locations = serverLocations(db, accountId, messageId)
-      enqueue(db, accountId, { kind: 'move', messageId, locations, target: { mailboxId: target.id, path: target.path } })
-      // Show it in the target folder now, under a placeholder UID until the server assigns one.
-      db.run('DELETE FROM message_mailboxes WHERE message_id = ?', [messageId])
-      db.run('INSERT INTO message_mailboxes (mailbox_id, uid, message_id) VALUES (?, ?, ?)', [target.id, -messageId, messageId])
-    }
-  })()
-  return true
+  return (messageId: number) => (query.get(messageId) as { own: number }).own === 1
 }
 
 /** Label ids the UI uses for Gmail labels: `gm:<account>:<label name>`. */
@@ -166,16 +195,45 @@ export function queueLabels(db: MailDatabase, accountId: string, threadId: strin
   return queued
 }
 
+/**
+ * Delete a conversation for good. Like a move, your own copies in Sent and Drafts stay, unless the
+ * conversation has nothing else in it.
+ */
 export function queueDelete(db: MailDatabase, accountId: string, threadId: string): boolean {
-  const messageIds = threadMessageIds(db, accountId, threadId)
-  if (messageIds.length === 0) return false
-  db.transaction(() => {
-    for (const messageId of messageIds) {
-      enqueue(db, accountId, { kind: 'delete', messageId, locations: serverLocations(db, accountId, messageId) })
-      db.run('DELETE FROM messages WHERE id = ?', [messageId])
-    }
-  })()
+  const all = threadMessageIds(db, accountId, threadId)
+  if (all.length === 0) return false
+  const own = ownCopyCheck(db)
+  const deletable = all.filter((id) => !own(id))
+  queueDeleteMessages(db, accountId, deletable.length > 0 ? deletable : all)
   return true
+}
+
+/**
+ * Delete these messages for good: here at once, on the server when the queue replays. With
+ * `spareOwnCopies` (a clean-up), copies in Sent and Drafts are never touched, on the server or here: a
+ * message you also have there loses only its other copies. Returns how many messages lost a copy.
+ */
+export function queueDeleteMessages(db: MailDatabase, accountId: string, messageIds: readonly number[], options: { spareOwnCopies?: boolean } = {}): number {
+  const spare = new Set(
+    options.spareOwnCopies
+      ? (db.query("SELECT id FROM mailboxes WHERE account_id = ? AND special_use IN ('\\Sent', '\\Drafts')").all(accountId) as Array<{ id: number }>).map((r) => r.id)
+      : [],
+  )
+  const spared = JSON.stringify([...spare])
+  const keeps = db.prepare('SELECT EXISTS (SELECT 1 FROM message_mailboxes WHERE message_id = ? AND mailbox_id IN (SELECT value FROM json_each(?))) AS kept')
+  let deleted = 0
+  inBulk(db, messageIds.length, () => {
+    for (const messageId of messageIds) {
+      const kept = spare.size > 0 && (keeps.get(messageId, spared) as { kept: number }).kept === 1
+      const locations = serverLocations(db, accountId, messageId).filter((l) => !spare.has(l.mailboxId))
+      if (kept && locations.length === 0) continue
+      enqueue(db, accountId, { kind: 'delete', messageId, locations })
+      if (kept) db.run('DELETE FROM message_mailboxes WHERE message_id = ? AND mailbox_id NOT IN (SELECT value FROM json_each(?))', [messageId, spared])
+      else db.run('DELETE FROM messages WHERE id = ?', [messageId])
+      deleted++
+    }
+  })
+  return deleted
 }
 
 // --- Replay ------------------------------------------------------------------------------------
@@ -186,8 +244,62 @@ export function queueDelete(db: MailDatabase, accountId: string, threadId: strin
  * copies of the message behind in other folders. `gone`: moves whose message was no longer on the
  * server (the server wins; a full sync finds where it went). `labels`: Gmail label changes sent.
  */
-export type ReplayResult = { applied: number; dropped: number; remaining: number; resync: Set<number>; gone: number; labels: number }
+export type ReplayResult = { applied: number; dropped: number; remaining: number; resync: Set<number>; gone: number; labels: number; lost: DroppedChange[] }
 type Applied = { resync?: number[]; gone?: boolean }
+
+/**
+ * Changes given up on in a replay, grouped for telling the person: `count` messages whose `kind`
+ * change (a move: into `folder`, when it's a known one) never reached the server, and was undone here.
+ */
+export type DroppedChange = { kind: PendingOp['kind']; folder?: FolderId; count: number }
+
+/**
+ * The folder a queued op's UID was taken in has been rebuilt on the server since (its UIDVALIDITY
+ * changed): the UID may now be another message's. Never retried: the op is dropped, and the sync that
+ * follows finds the folder reset and re-reads it.
+ */
+class StaleLocation extends Error {}
+
+/** Throws StaleLocation when the selected folder's UIDVALIDITY isn't the one recorded with `location`. */
+const checkValidity = (client: ImapFlow, location: Location) => {
+  if (location.uidvalidity == null || !client.mailbox) return
+  const now = Number(client.mailbox.uidValidity)
+  if (now !== location.uidvalidity) throw new StaleLocation(`${location.path} UIDVALIDITY is ${now}, not ${location.uidvalidity} as when this change was made`)
+}
+
+const FOLDER_OF_USE: Record<string, FolderId> = { '\\Inbox': 'inbox', '\\Archive': 'archive', '\\All': 'archive', '\\Trash': 'trash', '\\Junk': 'spam', '\\Sent': 'sent', '\\Drafts': 'drafts' }
+
+/**
+ * Undo locally what a dropped op had already done here, so the screen shows what the server has. A
+ * move's placeholder goes and the message is linked where it was again (unless those UIDs are stale:
+ * the sync re-reads that folder anyway); a read or star change flips back, unless a later one for the
+ * same message is still queued. A delete needs nothing: the folder's link count no longer matches the
+ * server's, so the next sync re-reads it and brings the message back.
+ */
+function restoreDropped(db: MailDatabase, accountId: string, op: PendingOp, stale: boolean) {
+  db.transaction(() => {
+    if (op.kind === 'move') {
+      db.run('DELETE FROM message_mailboxes WHERE message_id = ? AND uid = ?', [op.messageId, -op.messageId])
+      if (!stale) {
+        for (const l of op.locations) {
+          db.run(
+            `INSERT OR IGNORE INTO message_mailboxes (mailbox_id, uid, message_id)
+               SELECT ?1, ?2, ?3 WHERE EXISTS (SELECT 1 FROM mailboxes WHERE id = ?1) AND EXISTS (SELECT 1 FROM messages WHERE id = ?3)`,
+            [l.mailboxId, l.uid, op.messageId],
+          )
+        }
+      }
+    } else if (op.kind === 'flags') {
+      if (db.query("SELECT 1 FROM pending_ops WHERE account_id = ? AND message_id = ? AND kind = 'flags'").get(accountId, op.messageId)) return
+      const set = (flag: string, on: boolean) => {
+        if (flag === '\\Seen') db.run('UPDATE messages SET seen = ? WHERE id = ?', [on ? 1 : 0, op.messageId])
+        if (flag === '\\Flagged') db.run('UPDATE messages SET flagged = ? WHERE id = ?', [on ? 1 : 0, op.messageId])
+      }
+      for (const flag of op.add) set(flag, false)
+      for (const flag of op.remove) set(flag, true)
+    }
+  })()
+}
 
 /** Is this failure about the connection (keep the op) rather than the op itself (drop it)? */
 const isConnectionError = (err: unknown) => {
@@ -212,6 +324,19 @@ export async function replayPendingOps(client: ImapFlow, db: MailDatabase, accou
   let gone = 0
   let labels = 0
   const resync = new Set<number>()
+  const lost = new Map<string, DroppedChange>()
+  const targetFolder = db.prepare('SELECT special_use FROM mailboxes WHERE id = ?')
+  const drop = (row: Row, op: PendingOp, stale: boolean) => {
+    db.run('DELETE FROM pending_ops WHERE id = ?', [row.id])
+    dropped++
+    restoreDropped(db, accountId, op, stale)
+    const use = op.kind === 'move' ? (targetFolder.get(op.target.mailboxId) as { special_use: string | null } | null)?.special_use : null
+    const folder = use ? FOLDER_OF_USE[use] : undefined
+    const key = `${op.kind}:${folder ?? ''}`
+    const entry = lost.get(key) ?? { kind: op.kind, ...(folder ? { folder } : {}), count: 0 }
+    entry.count++
+    lost.set(key, entry)
+  }
   const done = (row: Row, op: PendingOp, result: Applied | undefined) => {
     db.run('DELETE FROM pending_ops WHERE id = ?', [row.id])
     applied++
@@ -220,15 +345,17 @@ export async function replayPendingOps(client: ImapFlow, db: MailDatabase, accou
     if (op.kind === 'labels') labels++
   }
   /** False when the connection failed and the replay has to stop. */
-  const failed = (row: Row, err: unknown) => {
+  const failed = (row: Row, op: PendingOp, err: unknown) => {
+    if (err instanceof StaleLocation) {
+      drop(row, op, true)
+      return true
+    }
     if (isConnectionError(err) || !client.usable) {
       db.run('UPDATE pending_ops SET attempts = attempts + 1, last_error = ? WHERE id = ?', [String((err as Error)?.message ?? err), row.id])
       return false
     }
-    if (row.attempts + 1 >= MAX_ATTEMPTS) {
-      db.run('DELETE FROM pending_ops WHERE id = ?', [row.id])
-      dropped++
-    } else {
+    if (row.attempts + 1 >= MAX_ATTEMPTS) drop(row, op, false)
+    else {
       db.run('UPDATE pending_ops SET attempts = attempts + 1, last_error = ? WHERE id = ?', [String((err as Error)?.message ?? err), row.id])
     }
     return true
@@ -238,7 +365,7 @@ export async function replayPendingOps(client: ImapFlow, db: MailDatabase, accou
       done(rows[index]!, ops[index]!, await apply(client, db, ops[index]!))
       return true
     } catch (err) {
-      return failed(rows[index]!, err)
+      return failed(rows[index]!, ops[index]!, err)
     }
   }
 
@@ -269,7 +396,7 @@ export async function replayPendingOps(client: ImapFlow, db: MailDatabase, accou
       results.forEach((result, k) => done(rows[i + k]!, batch[k]!, result))
     } catch (err) {
       if (isConnectionError(err) || !client.usable) {
-        failed(rows[i]!, err)
+        failed(rows[i]!, ops[i]!, err)
         break
       }
       // Something about one of them: send them one by one, so only that one is held back.
@@ -279,7 +406,7 @@ export async function replayPendingOps(client: ImapFlow, db: MailDatabase, accou
     }
     i = end
   }
-  return { applied, dropped, remaining: pendingCount(db, accountId), resync, gone, labels }
+  return { applied, dropped, remaining: pendingCount(db, accountId), resync, gone, labels, lost: [...lost.values()] }
 }
 
 /**
@@ -290,10 +417,12 @@ async function applyMoves(client: ImapFlow, db: MailDatabase, batch: MoveOp[], s
   const gmail = client.capabilities.has('X-GM-EXT-1')
   const lock = await client.getMailboxLock(sources[0]!.path)
   try {
+    // One stale source fails the batch; one by one, each is then dropped or sent on its own.
+    for (const source of sources) checkValidity(client, source)
     const uids = sources.map((s) => s.uid)
     const existing = new Set(await searchUids(client, { uid: uids.join(',') }))
     const present = uids.filter((uid) => existing.has(uid))
-    const result = present.length ? await client.messageMove(present.join(','), batch[0]!.target.path, { uid: true }) : undefined
+    const result = present.length ? await moveMessages(client, present.join(','), batch[0]!.target.path) : undefined
     // In source-UID order, which is the order the server hands out the new UIDs: settleMove keeps the
     // target's checkpoint moving forward one at a time.
     const order = batch.map((_, k) => k).sort((a, b) => sources[a]!.uid - sources[b]!.uid)
@@ -324,8 +453,9 @@ async function apply(client: ImapFlow, db: MailDatabase, op: PendingOp): Promise
     if (!location) return
     const lock = await client.getMailboxLock(location.path)
     try {
-      if (op.add.length) await client.messageFlagsAdd(String(location.uid), op.add, { uid: true, useLabels: true })
-      if (op.remove.length) await client.messageFlagsRemove(String(location.uid), op.remove, { uid: true, useLabels: true })
+      checkValidity(client, location)
+      if (op.add.length) await addFlags(client, String(location.uid), op.add, { uid: true, useLabels: true })
+      if (op.remove.length) await removeFlags(client, String(location.uid), op.remove, { uid: true, useLabels: true })
     } finally {
       lock.release()
     }
@@ -338,9 +468,10 @@ async function apply(client: ImapFlow, db: MailDatabase, op: PendingOp): Promise
     for (const location of current.length ? current : op.locations) {
       const lock = await client.getMailboxLock(location.path)
       try {
+        checkValidity(client, location)
         // STORE on a UID that no longer exists is a no-op on the server: the server wins.
-        if (op.add.length) await client.messageFlagsAdd(String(location.uid), op.add, { uid: true })
-        if (op.remove.length) await client.messageFlagsRemove(String(location.uid), op.remove, { uid: true })
+        if (op.add.length) await addFlags(client, String(location.uid), op.add)
+        if (op.remove.length) await removeFlags(client, String(location.uid), op.remove)
       } finally {
         lock.release()
       }
@@ -355,7 +486,8 @@ async function apply(client: ImapFlow, db: MailDatabase, op: PendingOp): Promise
     for (const location of op.locations) {
       const lock = await client.getMailboxLock(location.path)
       try {
-        await client.messageDelete(String(location.uid), { uid: true })
+        checkValidity(client, location)
+        await deleteMessages(client, String(location.uid))
       } finally {
         lock.release()
       }
@@ -376,6 +508,7 @@ async function apply(client: ImapFlow, db: MailDatabase, op: PendingOp): Promise
   const leftBehind = client.capabilities.has('X-GM-EXT-1') ? [] : op.locations.filter((l) => l !== source && l.path !== op.target.path).map((l) => l.mailboxId)
   const lock = await client.getMailboxLock(source.path)
   try {
+    checkValidity(client, source)
     // A failed search (dropped connection, NO/BAD) is not the same as "the server doesn't have it":
     // treating it as gone here would drop this message's only link and delete it locally. Let the op
     // stay queued and retry instead.
@@ -384,7 +517,7 @@ async function apply(client: ImapFlow, db: MailDatabase, op: PendingOp): Promise
       settleMove(db, op, 'gone')
       return { gone: true }
     }
-    const result = await client.messageMove(String(source.uid), op.target.path, { uid: true })
+    const result = await moveMessages(client, String(source.uid), op.target.path)
     const uid = result ? result.uidMap?.get(source.uid) : undefined
     settleMove(db, op, uid ?? 'unknown', source)
     return { resync: uid == null ? [op.target.mailboxId, ...leftBehind] : leftBehind }

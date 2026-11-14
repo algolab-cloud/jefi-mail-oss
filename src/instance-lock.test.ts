@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from 'bun:test'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { appLabel, bundleOf, claimInstance, findUnlockedJefi, holdInstance, type LockProbe } from './instance-lock'
+import { appLabel, bundleOf, claimInstance, findUnlockedJefi, holdInstance, isJefiAppCommand, parseLstart, START_TOLERANCE_MS, type LockProbe } from './instance-lock'
 
 const dirs: string[] = []
 afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })))
@@ -11,12 +11,16 @@ const lockFile = () => {
   return `${dir}/app.lock`
 }
 
-/** Processes by pid: alive or not, Jefi or something else. A fake clock that `pause` moves on. */
-const probe = (processes: Record<number, 'jefi' | 'other'>, onPause?: (now: number) => void): LockProbe => {
+/**
+ * Processes by pid: alive or not, Jefi or something else, and when each started (unknown unless
+ * given). A fake clock that `pause` moves on.
+ */
+const probe = (processes: Record<number, 'jefi' | 'other'>, onPause?: (now: number) => void, starts: Record<number, number> = {}): LockProbe => {
   let clock = 0
   return {
     alive: (pid) => pid in processes,
     isJefi: (pid) => processes[pid] === 'jefi',
+    started: (pid) => starts[pid] ?? null,
     pause: (ms) => {
       clock += ms
       onPause?.(clock)
@@ -105,3 +109,86 @@ test('an older Jefi that never takes the lock is still found, but its CLI and MC
   // An old-style launch argument from Finder is still a GUI launch.
   expect(findUnlockedJefi('9 /Applications/Jefi.app/Contents/MacOS/Jefi -psn_0_12345', 1)?.pid).toBe(9)
 })
+
+test('a pid reused after a crash by a process that started later does not keep the lock alive', () => {
+  const crashedAt = 1_700_000_000_000
+  const stale = { pid: 200, app: '/Applications/Jefi.app', startedAt: crashedAt }
+  // Pid 200 now belongs to something whose command mentions jefi (an editor in the repo, say),
+  // started a minute after the lock was written.
+  const path = lockFile()
+  writeFileSync(path, JSON.stringify(stale))
+  expect(claimInstance(path, me, probe({ 100: 'jefi', 200: 'jefi' }, undefined, { 200: crashedAt + 60_000 })).ok).toBe(true)
+  expect(JSON.parse(readFileSync(path, 'utf8')).pid).toBe(100)
+
+  // The Jefi that wrote it started before it did (or within ps's rounding): still in use.
+  for (const started of [crashedAt - 5_000, crashedAt + START_TOLERANCE_MS]) {
+    const held = lockFile()
+    writeFileSync(held, JSON.stringify(stale))
+    expect(claimInstance(held, me, probe({ 100: 'jefi', 200: 'jefi' }, undefined, { 200: started }))).toEqual({ ok: false, holder: stale })
+  }
+  // No start time to compare (an older lock, or ps can't tell): assume it's the holder.
+  const unknown = lockFile()
+  writeFileSync(unknown, JSON.stringify(stale))
+  expect(claimInstance(unknown, me, probe({ 100: 'jefi', 200: 'jefi' })).ok).toBe(false)
+})
+
+test('the CLI and MCP server are not the app, whatever pid they reuse', () => {
+  expect(isJefiAppCommand('/Applications/Jefi.app/Contents/MacOS/Jefi')).toBe(true)
+  expect(isJefiAppCommand('/Users/x/jefi/build/dev/Jefi Dev.app/Contents/MacOS/Jefi Dev --hot src/mail.tsx')).toBe(true)
+  expect(isJefiAppCommand('/Users/x/.bun/bin/bun src/mail.tsx')).toBe(true)
+  expect(isJefiAppCommand('/Applications/Jefi.app/Contents/MacOS/Jefi mcp')).toBe(false)
+  expect(isJefiAppCommand('/Users/x/.bun/bin/bun /Users/x/jefi/src/mail.tsx mcp')).toBe(false)
+  expect(isJefiAppCommand('/Applications/Jefi.app/Contents/MacOS/Jefi cli inbox --json')).toBe(false)
+  expect(isJefiAppCommand('/usr/bin/vim notes.txt')).toBe(false)
+})
+
+test('process start times from ps are read in local time', () => {
+  expect(parseLstart('Thu Nov 12 19:02:22 2026    \n')).toBe(new Date(2026, 10, 12, 19, 2, 22).getTime())
+  expect(parseLstart('Mon Jan  5 07:04:09 2026')).toBe(new Date(2026, 0, 5, 7, 4, 9).getTime())
+  expect(parseLstart('')).toBeNull()
+  expect(parseLstart('jeu 12 nov 19:02:22 2026')).toBeNull()
+})
+
+test('of two launches that find the same stale lock, only one takes it', () => {
+  const path = lockFile()
+  writeFileSync(path, JSON.stringify(other))
+  const second = { pid: 300, app: '/Applications/Jefi.app', startedAt: 5 }
+  let secondClaim: ReturnType<typeof claimInstance> | undefined
+  // The first launch reads the stale lock and checks its pid; meanwhile the second clears it and
+  // takes the mailbox. The first must not then delete the second's lock and take it too.
+  const first = claimInstance(path, me, {
+    ...probe({ 100: 'jefi', 300: 'jefi' }, undefined, { 300: 4 }),
+    alive: (pid) => {
+      if (pid === 200 && !secondClaim) secondClaim = claimInstance(path, second, probe({ 100: 'jefi', 300: 'jefi' }))
+      return pid === 100 || pid === 300
+    },
+  })
+  expect(secondClaim?.ok).toBe(true)
+  expect(first).toEqual({ ok: false, holder: second })
+  expect(JSON.parse(readFileSync(path, 'utf8')).pid).toBe(300)
+})
+
+test('many launches at once against a stale lock: exactly one wins', async () => {
+  const script = `
+    import { claimInstance } from ${JSON.stringify(`${import.meta.dir}/instance-lock.ts`)}
+    const [path, startAt] = process.argv.slice(-2)
+    const alive = (pid) => { try { process.kill(pid, 0); return true } catch (e) { return e.code === 'EPERM' } }
+    while (Date.now() < Number(startAt)) {}
+    const claim = claimInstance(path, { pid: process.pid, app: 'Jefi', startedAt: Date.now() }, {
+      alive, isJefi: () => true, started: () => null, pause: (ms) => Bun.sleepSync(ms), now: () => Date.now(),
+    })
+    console.log(claim.ok ? 'won' : 'lost')
+    // Stay open while the others look, as the app would.
+    Bun.sleepSync(1500)
+  `
+  for (let round = 0; round < 3; round++) {
+    const path = lockFile()
+    // Left by a Jefi that crashed: no process has this pid.
+    writeFileSync(path, JSON.stringify({ pid: 4_194_303, app: 'Jefi', startedAt: 1 }))
+    const startAt = Date.now() + 700
+    const runs = Array.from({ length: 6 }, () => Bun.spawn([process.execPath, '-e', script, path, String(startAt)], { stdout: 'pipe', stderr: 'inherit' }))
+    const results = await Promise.all(runs.map(async (run) => (await new Response(run.stdout).text()).trim()))
+    expect(results.filter((r) => r === 'won')).toHaveLength(1)
+    expect(results.filter((r) => r === 'lost')).toHaveLength(5)
+  }
+}, 20_000)

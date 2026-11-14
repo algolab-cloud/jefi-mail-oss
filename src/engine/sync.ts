@@ -6,6 +6,7 @@ import type { Readable } from 'node:stream'
 import type { FetchMessageObject, ImapFlow, ListResponse, MessageAddressObject, MessageStructureObject, StatusObject } from 'imapflow'
 import { simpleParser, type Attachment, type ParsedMail } from 'mailparser'
 import type { AttachmentTarget } from './attachment-cache'
+import { quarantine } from './attachment-safety'
 import { searchUids } from './connection'
 import type { MailDatabase } from './db'
 import { MAX_INVITE_BYTES, type StoredInvite } from './calendar/store'
@@ -136,6 +137,9 @@ export async function syncMailbox(client: ImapFlow, db: MailDatabase, accountId:
         { uid: true, envelope: true, flags: true, size: true, internalDate: true, headers: ['references', 'list-unsubscribe', 'list-unsubscribe-post'], labels: gmail(client) },
         { uid: true },
       )) {
+        // Marked \Deleted and waiting for an expunge (ours, on a server without UIDPLUS: see
+        // deleteMessages; or another app's): as good as gone, so not brought back here.
+        if (message.flags?.has('\\Deleted')) continue
         batch.push(toSyncedMessage(message))
       }
       const result = storeBatch(db, accountId, { id: box.id, uidvalidity }, batch, { lastUid: checkpointUid, uidnext: knownNext, highestmodseq })
@@ -847,6 +851,9 @@ export async function downloadAttachment(client: ImapFlow, target: AttachmentTar
       await attachmentFile.writeFile(attachment.content)
       await attachmentFile.sync()
       await attachmentFile.close()
+      // Marked as downloaded before it's visible under its own name, so nothing ever opens it
+      // unmarked (the attribute moves with the rename). Never fails the download.
+      await quarantine(temporaryPath)
       renameSync(temporaryPath, target.path)
     } catch (error) {
       await attachmentFile.close().catch(() => {})

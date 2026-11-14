@@ -1,7 +1,7 @@
 import { Database } from 'bun:sqlite'
-import { mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { preparePrivateDatabase } from '../data-dir'
 import { configDir } from '../paths'
+import { backupBeforeMigrating } from './db-backup'
 
 // ---------------------------------------------------------------------------
 // The engine's local store: source of truth for synced mail, opened only by the engine worker.
@@ -953,6 +953,16 @@ export const MIGRATIONS: string[] = [
   `
   ALTER TABLE messages ADD COLUMN sign_in TEXT;
   `,
+
+  // 29 — queued changes by message (pending_ops.message_id). Queueing a move looks for an earlier move
+  // of the same message to supersede, and syncs ask which messages have changes queued; both used to
+  // read and parse every queued op, so a clean-up of thousands was quadratic. A VIRTUAL generated
+  // column, so it is filled for rows already queued and for rows an older build inserts (which knows
+  // nothing of it). Additive: older builds ignore the column and the index.
+  `
+  ALTER TABLE pending_ops ADD COLUMN message_id INTEGER GENERATED ALWAYS AS (json_extract(payload_json, '$.messageId')) VIRTUAL;
+  CREATE INDEX pending_ops_message ON pending_ops (account_id, message_id);
+  `,
 ]
 
 /**
@@ -979,7 +989,8 @@ export type MailDatabase = Database
 
 /** Opens (creating if needed) the mail database and brings its schema up to date. */
 export function openDatabase(path = defaultDatabasePath()): MailDatabase {
-  if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true })
+  // Owner-only: the folder, the database, and (through the database's mode) its -wal and -shm.
+  if (path !== ':memory:') preparePrivateDatabase(path)
   const db = new Database(path, { create: true, strict: true })
   db.exec('PRAGMA journal_mode = WAL')
   db.exec('PRAGMA foreign_keys = ON')
@@ -1029,6 +1040,8 @@ export function migrate(db: MailDatabase, migrations = MIGRATIONS): number {
     acceptNewerSchema(db, current, migrations)
     return migrations.length
   }
+  // A copy of the mailbox as it was, before any migration touches it (none for a new one).
+  if (current > 0 && current < migrations.length) backupBeforeMigrating(db, current)
   for (let version = current + 1; version <= migrations.length; version++) {
     db.transaction(() => {
       db.exec(migrations[version - 1]!)

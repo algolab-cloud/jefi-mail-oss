@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { rmSync, statSync } from 'node:fs'
 import { configDir } from '../paths'
-import { appConnectOptions, checkAccount, classify, createImapClient, createSmtpTransport, searchUids, type ConnectOptions } from './connection'
+import { appConnectOptions, appendMessage, checkAccount, classify, createImapClient, createSmtpTransport, deleteMessages, searchUids, type ConnectOptions } from './connection'
 import { buildOutgoing, newMessageId, replyReferences, replySubject, type OutgoingMessage } from './mime'
 import {
   appendToSent,
@@ -59,12 +59,13 @@ import {
   updateFlags,
   type MailboxRow,
 } from './mail-store'
-import { pendingCount, queueDelete, queueFlags, queueLabels, queueMove, replayPendingOps } from './pending-ops'
+import { pendingCount, queueDelete, queueDeleteMessages, queueFlags, queueLabels, queueMove, queueMoves, replayPendingOps, type ReplayResult } from './pending-ops'
 import { credentialsFor, credentialsFromSecret, oauthSecret } from './credentials'
 import { OAuthError, signIn } from './oauth'
 import { MissingSecretError, keychainSecrets, type SecretStore } from './secrets'
 import { downloadAttachment, fetchBodiesOf, headerValue, syncAccount, syncMailbox } from './sync'
-import { parseUnsubscribe, scrubReport, scrubStats, scrubTargets, senderProfiles, senderThreads, spamThreads, unsubscribeOptions } from './scrub'
+import { parseUnsubscribe, scrubMessageIds, scrubReport, scrubStats, scrubTargets, senderProfiles, senderThreads, spamThreads, unsubscribeOptions } from './scrub'
+import { postOneClickUnsubscribe } from './unsubscribe-url'
 import { searchThreads } from './search'
 import { applyRules, countRuleMatches, deleteRule, isEmptyMatch, listRules, newInboxMessageIds, saveRule } from './rules'
 import { blockedSenders, screenerEnabledAt, setScreener, setVerdict } from './screener'
@@ -77,6 +78,7 @@ import type { DeliveryState, EngineEvent, EngineListener, GetAttachmentResult, G
 import { detectWake } from './wake'
 import { watchInbox, type InboxWatcher } from './watch'
 import { clearAttachmentCache, hasReadableCachedAttachment, resolveAttachmentTarget, sameAttachmentTarget, settleAttachmentSize } from './attachment-cache'
+import { openAttachmentFile } from './attachment-safety'
 import { clearOriginalCache, downloadOriginalMessage, hasReadableOriginal, resolveOriginalTarget } from './original-message'
 
 // ---------------------------------------------------------------------------
@@ -116,7 +118,7 @@ export type ImapEngineOptions = {
   draftSyncDelayMs?: number
   /** How often snoozes and scheduled sends are checked (default 30s). */
   schedulerMs?: number
-  /** Opens a downloaded attachment; defaults to macOS `open`. Tests capture the path instead. */
+  /** Opens a downloaded attachment; defaults to macOS `open` (risky types revealed in Finder). Tests capture the path instead. */
   openFile?: (path: string) => void
   /** Sleep detection; false turns it off. */
   wake?: { intervalMs?: number; toleranceMs?: number } | false
@@ -501,7 +503,7 @@ export function createImapEngine(options: ImapEngineOptions = {}): MailEngine {
         // Local changes go up before anything comes down, so the sync sees the server as we left it.
         if (pendingCount(db, accountId) > 0) {
           emit({ type: 'syncState', accountId, manual, state: { phase: 'Saving changes' } })
-          await replayPendingOps(client, db, accountId)
+          reportDropped(accountId, await replayPendingOps(client, db, accountId))
         }
         await pushDrafts(client, accountId)
 
@@ -517,7 +519,7 @@ export function createImapEngine(options: ImapEngineOptions = {}): MailEngine {
         reconcileSentCopies(db, accountId)
         // Rules act on what just arrived in the Inbox (not on the first download of a mailbox).
         const ruled = inboxBefore && inboxBefore.last_uid > 0 ? applyInboxRules(db, accountId, inboxBefore.id, inboxBefore.last_uid) : 0
-        if (ruled && pendingCount(db, accountId) > 0) await replayPendingOps(client, db, accountId)
+        if (ruled && pendingCount(db, accountId) > 0) reportDropped(accountId, await replayPendingOps(client, db, accountId))
         return synced
       })
     } catch (err) {
@@ -668,6 +670,15 @@ export function createImapEngine(options: ImapEngineOptions = {}): MailEngine {
   // undone). Their new inbox UIDs aren't arrivals: they're neither announced as new mail nor put
   // through blocked senders and rules again. Kept until the move has settled into a real inbox UID.
   const movedIn = new Map<string, Set<number>>()
+  /**
+   * Changes the replay gave up on (refused five times, or their folder rebuilt on the server) were
+   * undone locally: say so, rather than let the mail quietly jump back on the next sync.
+   */
+  const reportDropped = (accountId: string, result: ReplayResult) => {
+    if (!result.lost.length) return
+    emit({ type: 'changesDropped', accountId, changes: result.lost })
+    publishSoon(accountId)
+  }
   const noteMovedIn = (accountId: string, threadId: string) => {
     const ids = movedIn.get(accountId) ?? new Set<number>()
     for (const id of threadMessageIds(database(), accountId, threadId)) ids.add(id)
@@ -909,7 +920,8 @@ export function createImapEngine(options: ImapEngineOptions = {}): MailEngine {
       // removal (or mark the draft pushed) once this resolves without throwing, so a search failure
       // here has to fail the whole call and leave the work queued for the next sync (lume-75z.7).
       const uids = await searchUids(client, { header: { 'message-id': messageId } })
-      if (uids.length) await client.messageDelete(uids, { uid: true })
+      // A refused EXPUNGE throws too: the old copy is still there, so the caller must not APPEND a new one.
+      if (uids.length) await deleteMessages(client, uids.join(','))
     } finally {
       lock.release()
     }
@@ -949,7 +961,7 @@ export function createImapEngine(options: ImapEngineOptions = {}): MailEngine {
         if (unreadableAttachment(outgoing)) continue
         const raw = await renderRaw(outgoing)
         await removeRemoteDraft(client, box.path, messageId)
-        await client.append(box.path, raw, ['\\Draft', '\\Seen'], date)
+        await appendMessage(client, box.path, raw, ['\\Draft', '\\Seen'], date)
         markDraftPushed(db, row.id, row.updated_at)
       } catch {}
     }
@@ -1043,6 +1055,7 @@ export function createImapEngine(options: ImapEngineOptions = {}): MailEngine {
       try {
         settled = await withCommand(accountId, async (client) => {
           const result = await replayPendingOps(client, db, accountId)
+          reportDropped(accountId, result)
           labels = result.labels
           if (result.remaining > 0 || result.dropped > 0 || result.gone > 0) return false
           for (const box of listMailboxes(db, accountId).filter((b) => result.resync.has(b.id))) {
@@ -1279,8 +1292,10 @@ export function createImapEngine(options: ImapEngineOptions = {}): MailEngine {
         await withConnection(account.id, async (client) => {
           for (const message of messages) await appendToSent(client, sent.path, await renderRaw(message), message.date)
         })
-      } catch {
-        // The message went out; a missing Sent copy isn't worth failing the send over.
+      } catch (err) {
+        // The message went out; a missing Sent copy isn't worth failing the send over. A refused
+        // APPEND lands here as well (appendToSent throws on it), so it is noted, not lost silently.
+        console.warn(`sent copy: ${account.id}: ${(err as Error)?.message ?? err}`)
       }
     }
     syncSoon(account.id)
@@ -1500,7 +1515,7 @@ export function createImapEngine(options: ImapEngineOptions = {}): MailEngine {
       setVerdict(database(), accountId, email, verdict)
       let moved = 0
       if (verdict === 'block') {
-        for (const target of scrubTargets(database(), accountId, { sender: email })) if (queueMove(database(), accountId, target.threadId, 'trash')) moved++
+        moved = queueMoves(database(), accountId, scrubTargets(database(), accountId, { sender: email }).map((t) => t.threadId), 'trash').length
         if (moved) syncSoon(accountId)
       }
       publishSoon(accountId)
@@ -1558,21 +1573,22 @@ export function createImapEngine(options: ImapEngineOptions = {}): MailEngine {
     },
 
     async scrub(accountId, selector, action, keepLatest, except) {
-      const targets = scrubTargets(database(), accountId, selector, keepLatest, new Set(except ?? []))
+      const db = database()
       // Purge deletes on the server and drops the local copy: nothing to undo, so nothing is returned.
+      // It erases exactly the messages the selector matches (what the report counted and the
+      // confirmation said), never the rest of their conversations, and never your Sent or Drafts copies.
       if (action === 'purge') {
-        let purged = 0
-        for (const target of targets) if (queueDelete(database(), accountId, target.threadId)) purged++
-        if (purged) {
+        const ids = scrubMessageIds(db, accountId, selector, keepLatest, new Set(except ?? []))
+        if (queueDeleteMessages(db, accountId, ids, { spareOwnCopies: true })) {
           publishSoon(accountId)
           syncSoon(accountId)
         }
         return []
       }
-      const moves: ScrubMove[] = []
-      for (const target of targets) {
-        if (queueMove(database(), accountId, target.threadId, action)) moves.push({ threadId: target.threadId, back: target.inInbox ? 'inbox' : 'archive' })
-      }
+      const targets = scrubTargets(db, accountId, selector, keepLatest, new Set(except ?? []))
+      // One transaction for the lot: a clean-up can queue thousands of moves.
+      const moved = new Set(queueMoves(db, accountId, targets.map((t) => t.threadId), action))
+      const moves: ScrubMove[] = targets.filter((t) => moved.has(t.threadId)).map((t) => ({ threadId: t.threadId, back: t.inInbox ? 'inbox' : 'archive' }))
       if (moves.length) {
         publishSoon(accountId)
         syncSoon(accountId)
@@ -1581,7 +1597,13 @@ export function createImapEngine(options: ImapEngineOptions = {}): MailEngine {
     },
 
     unscrub(accountId, moves) {
-      for (const move of moves) if (queueMove(database(), accountId, move.threadId, move.back) && move.back === 'inbox') noteMovedIn(accountId, move.threadId)
+      const db = database()
+      db.transaction(() => {
+        for (const back of new Set(moves.map((m) => m.back))) {
+          const moved = queueMoves(db, accountId, moves.filter((m) => m.back === back).map((m) => m.threadId), back)
+          if (back === 'inbox') for (const threadId of moved) noteMovedIn(accountId, threadId)
+        }
+      })()
       publishSoon(accountId)
       syncSoon(accountId)
     },
@@ -1619,21 +1641,8 @@ export function createImapEngine(options: ImapEngineOptions = {}): MailEngine {
         }
       }
       if (!options) return { ok: false, error: "This sender doesn't offer an unsubscribe link" }
-      if (options.oneClick) {
-        try {
-          const response = await fetch(options.oneClick, {
-            method: 'POST',
-            headers: { 'content-type': 'application/x-www-form-urlencoded' },
-            body: 'List-Unsubscribe=One-Click',
-            redirect: 'follow',
-            // A sender's server that never answers mustn't leave Unsubscribe spinning.
-            signal: AbortSignal.timeout(15_000),
-          })
-          if (response.ok) return { ok: true, done: true }
-        } catch {
-          // Try the other ways below.
-        }
-      }
+      // Only to a public https host, never following a redirect; otherwise try the other ways below.
+      if (options.oneClick && (await postOneClickUnsubscribe(options.oneClick)) === 'done') return { ok: true, done: true }
       if (options.mailto) return { ok: true, done: false, mailto: options.mailto }
       if (options.link) return { ok: true, done: false, link: options.link }
       return { ok: false, error: "Couldn't reach the sender's unsubscribe page" }
@@ -2068,5 +2077,8 @@ function unreachable(thread: MailThread): MailThread {
   }
 }
 
-/** Hands a downloaded file to macOS, which opens it in the person's default app for that type. */
-const openFile = (path: string) => void Bun.spawn(['open', path], { stdout: 'ignore', stderr: 'ignore' })
+/**
+ * Hands a downloaded file to macOS, which opens it in the person's default app for that type, or
+ * shows it in Finder when opening it could run something (see attachment-safety.ts).
+ */
+const openFile = (path: string) => void openAttachmentFile(path).catch(() => {})

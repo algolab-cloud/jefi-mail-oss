@@ -300,7 +300,7 @@ function restartInto(bundle: string, staged: string, expectedVersion: string) {
   const script = `${dir}/apply-update.sh`
   const bundleDir = dirname(bundle)
   const swapId = randomUUID()
-  fs.mkdirSync(dir, { recursive: true })
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
   fs.writeFileSync(script, swapScript({
     pid: process.pid,
     app: bundle,

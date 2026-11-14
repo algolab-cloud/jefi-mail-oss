@@ -11,6 +11,9 @@ test('Delete forever says what it will erase', () => {
   const sender = { label: 'Northwind Deals', messages: 1, bytes: 2048, selector: { sender: 'news@deals.example' } }
   expect(purgeCopy(sender, 0).title).toBe('Delete 1 message for good?')
   expect(purgeCopy(sender, 0).body).toStartWith('Everything from Northwind Deals is erased on the server')
+  // Only the matching messages: not whole conversations, never Sent or Drafts.
+  expect(purgeCopy(sender, 0).body).not.toContain('whole conversations')
+  expect(purgeCopy(sender, 0).body).toContain('Other messages in the same conversations, and your copies in Sent and Drafts, are kept')
   // Keep newest: the group's totals overstate what goes, so it says so.
   const kept = purgeCopy({ ...sender, messages: 30 }, 5)
   expect(kept.title).toBe('Delete all but the newest 5 for good?')

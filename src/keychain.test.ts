@@ -1,5 +1,5 @@
-import { afterEach, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { afterEach, expect, spyOn, test } from 'bun:test'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SECRET_SERVICE, keychainSecrets } from './engine/secrets'
@@ -236,4 +236,138 @@ test('a worker gets the vault key from the main thread, not the Keychain', async
   expect(reply).toEqual({ value: 'pw' })
   // The main thread already had the key, so answering the worker cost no Keychain read at all.
   expect(keys.reads).toEqual([])
+}, 20_000)
+
+const KEY_ID = `${VAULT_KEY.service}/${VAULT_KEY.name}`
+const quietErrors = () => {
+  const spy = spyOn(console, 'error').mockImplementation(() => {})
+  cleanups.push(() => spy.mockRestore())
+  return spy
+}
+
+test('a Keychain read that fails leaves the vault alone and surfaces the error', async () => {
+  const dir = tempDir()
+  const file = join(dir, 'secrets.vault')
+  const keys = fakeKeychain()
+  await vaultKeychain(file, keys.store).set({ service: 's', name: 'a', value: 'kept' })
+  const before = readFileSync(file)
+  let sets = 0
+  const failing: Keychain = {
+    ...keys.store,
+    async get() {
+      throw new Error('User interaction is not allowed.')
+    },
+    async set(item) {
+      sets++
+      return keys.store.set(item)
+    },
+  }
+  const vault = vaultKeychain(file, failing)
+  await expect(vault.get({ service: 's', name: 'a' })).rejects.toThrow('User interaction is not allowed.')
+  await expect(vault.set({ service: 's', name: 'b', value: 'x' })).rejects.toThrow()
+  // Nothing set aside, rewritten or replaced: the next launch, with the Keychain unlocked, reads it all.
+  expect(readFileSync(file)).toEqual(before)
+  expect(readdirSync(dir).filter((name) => name.includes('unreadable') || name.includes('corrupt'))).toEqual([])
+  expect(sets).toBe(0)
+  expect(await vaultKeychain(file, keys.store).get({ service: 's', name: 'a' })).toBe('kept')
+}, 20_000)
+
+test('two handles making the first key at once agree on one key', async () => {
+  const dir = tempDir()
+  const file = join(dir, 'secrets.vault')
+  const keys = fakeKeychain()
+  let sets = 0
+  // Both handles find no key before either makes one: the race on a first launch.
+  const waiting: Array<() => void> = []
+  let firstReads = 0
+  const racing: Keychain = {
+    async get(item) {
+      if (item.name === VAULT_KEY.name && firstReads < 2) {
+        firstReads++
+        await new Promise<void>((resolve) => {
+          waiting.push(resolve)
+          if (waiting.length === 2) for (const go of waiting.splice(0)) go()
+        })
+        return null
+      }
+      return keys.store.get(item)
+    },
+    async set(item) {
+      if (item.name === VAULT_KEY.name) sets++
+      return keys.store.set(item)
+    },
+    delete: keys.store.delete,
+  }
+  const [one, two] = [vaultKeychain(file, racing), vaultKeychain(file, racing)]
+  await Promise.all([one.set({ service: 's', name: 'one', value: '1' }), two.set({ service: 's', name: 'two', value: '2' })])
+  expect(sets).toBe(1)
+  expect(readdirSync(dir).filter((name) => name.includes('unreadable') || name.includes('corrupt') || name.includes('lock'))).toEqual([])
+  // Each sees the other's save, and a fresh handle (a later launch) reads both.
+  expect(await one.get({ service: 's', name: 'two' })).toBe('2')
+  expect(await two.get({ service: 's', name: 'one' })).toBe('1')
+  const later = vaultKeychain(file, keys.store)
+  expect(await later.get({ service: 's', name: 'one' })).toBe('1')
+  expect(await later.get({ service: 's', name: 'two' })).toBe('2')
+}, 20_000)
+
+test('a damaged vault is kept aside under a timestamped name and Jefi starts over', async () => {
+  const dir = tempDir()
+  const file = join(dir, 'secrets.vault')
+  const keys = fakeKeychain({ 'app.jefi.mail/account/a': 'from-before-the-vault' })
+  await vaultKeychain(file, keys.store).set({ service: 's', name: 'x', value: 'lost' })
+  const damaged = '{"iv":"AAAA","tag":"AAAA","data":"trunc'
+  writeFileSync(file, damaged)
+  const errors = quietErrors()
+  const vault = vaultKeychain(file, keys.store)
+  // Reads work again: a secret from before the vault comes back from its own Keychain item.
+  expect(await vault.get({ service: 'app.jefi.mail/account', name: 'a' })).toBe('from-before-the-vault')
+  expect(await vault.get({ service: 's', name: 'x' })).toBeNull()
+  const aside = readdirSync(dir).filter((name) => /^secrets\.vault\.corrupt-\d+$/.test(name))
+  expect(aside).toHaveLength(1)
+  expect(readFileSync(join(dir, aside[0]!), 'utf8')).toBe(damaged)
+  expect(errors).toHaveBeenCalledTimes(1)
+  expect(String(errors.mock.calls[0]![0])).toContain('corrupt-')
+  await vault.set({ service: 's', name: 'y', value: 'new' })
+  expect(await vaultKeychain(file, keys.store).get({ service: 's', name: 'y' })).toBe('new')
+}, 20_000)
+
+test('a vault sealed under another key is kept aside too, not failed on forever', async () => {
+  const dir = tempDir()
+  const file = join(dir, 'secrets.vault')
+  const keys = fakeKeychain()
+  await vaultKeychain(file, keys.store).set({ service: 's', name: 'x', value: 'old key' })
+  keys.items[KEY_ID] = Buffer.alloc(32, 7).toString('base64')
+  quietErrors()
+  const vault = vaultKeychain(file, keys.store)
+  expect(await vault.get({ service: 's', name: 'x' })).toBeNull()
+  await vault.set({ service: 's', name: 'x', value: 'new key' })
+  expect(await vault.get({ service: 's', name: 'x' })).toBe('new key')
+  expect(readdirSync(dir).filter((name) => name.startsWith('secrets.vault.corrupt-'))).toHaveLength(1)
+}, 20_000)
+
+test('a vault file that cannot be read is an error, and is left where it is', async () => {
+  if (process.getuid?.() === 0) return // root reads it anyway
+  const dir = tempDir()
+  const file = join(dir, 'secrets.vault')
+  const keys = fakeKeychain()
+  await vaultKeychain(file, keys.store).set({ service: 's', name: 'x', value: 'kept' })
+  chmodSync(file, 0o000)
+  cleanups.push(() => chmodSync(file, 0o600))
+  await expect(vaultKeychain(file, keys.store).get({ service: 's', name: 'x' })).rejects.toThrow()
+  expect(readdirSync(dir).filter((name) => name.includes('corrupt'))).toEqual([])
+}, 20_000)
+
+test('a malformed vault key is an error and replaces nothing', async () => {
+  const dir = tempDir()
+  const file = join(dir, 'secrets.vault')
+  const keys = fakeKeychain()
+  await vaultKeychain(file, keys.store).set({ service: 's', name: 'x', value: 'kept' })
+  const before = readFileSync(file)
+  const good = keys.items[KEY_ID]!
+  keys.items[KEY_ID] = Buffer.from('short').toString('base64')
+  await expect(vaultKeychain(file, keys.store).get({ service: 's', name: 'x' })).rejects.toThrow('malformed')
+  expect(keys.items[KEY_ID]).toBe(Buffer.from('short').toString('base64'))
+  expect(readFileSync(file)).toEqual(before)
+  keys.items[KEY_ID] = good
+  expect(await vaultKeychain(file, keys.store).get({ service: 's', name: 'x' })).toBe('kept')
 }, 20_000)

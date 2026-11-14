@@ -148,11 +148,11 @@ export async function startImapServer(
       return client
     },
     append: (path: string, message: TestMessage) => server.appendMessage(path, message.flags ?? [], message.internaldate ?? new Date().toUTCString(), asBytes(message).raw),
-    /** Simulate a server rebuilding a folder: new UIDVALIDITY and renumbered UIDs. */
-    renumber: (path: string, uidvalidity: number) => {
+    /** Simulate a server rebuilding a folder: new UIDVALIDITY and renumbered UIDs (from `firstUid`). */
+    renumber: (path: string, uidvalidity: number, firstUid = 1000) => {
       const mailbox = server.getMailbox(path)
       mailbox.uidvalidity = uidvalidity
-      let uid = 1000
+      let uid = firstUid
       for (const message of mailbox.messages) message.uid = uid++
       mailbox.uidnext = uid
     },

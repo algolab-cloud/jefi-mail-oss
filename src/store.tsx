@@ -1,7 +1,7 @@
 import { Profiler, createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { countCommit, countRender, renderCountsOn } from './render-counts'
 import { deepEqual, keepLoadedBodies, reuseUnchanged, sameItems, shallowEqual } from './store-equality'
-import { FOLDER_NAMES, mergeLabels, ruleDraftFrom, snoozeTime } from './store-pure'
+import { FOLDER_NAMES, droppedChangeMessage, mergeLabels, ruleDraftFrom, snoozeTime } from './store-pure'
 import type { Attachment, DraftFields, FolderId, Label, LabelTone, MailFolder, MailThread, Message } from './data'
 import { accountsToKeep, guessServers, initials, loadAccounts, saveAccounts, type Account } from './accounts'
 import { plainSnippet, recipientNames } from './markdown'
@@ -13,6 +13,7 @@ import type { ScrubGroup, ScrubGroupBy, ScrubStats, SenderProfile, ThreadPeek } 
 import type { MailRule, RuleMatchCount } from './engine/rules'
 import type { ScrubMove, UnreadThread } from './engine/types'
 import { snoozeLabel } from './engine/snooze'
+import { openAttachmentFile } from './engine/attachment-safety'
 import { inboxUnreadCount, unreadBasis, type UnreadBasis } from './unread-count'
 import { sidebarCounts, type SidebarCounts } from './sidebar-counts'
 import { addToBurst, incomingThread, newMailCopy, type NewMailBurst } from './new-mail'
@@ -857,6 +858,11 @@ export function MailProvider({ children }: { children: ReactNode }) {
           setContactsVersion((v) => v + 1)
           break
         }
+        case 'changesDropped': {
+          // The engine already put things back as the server has them; say why they moved again.
+          for (const change of event.changes) toast.error(droppedChangeMessage(change), { description: accountById(accountId)?.email })
+          break
+        }
         case 'connection': {
           const needs = event.status === 'error' && !!event.needsSignIn
           // Offline says nothing about the credentials: keep what we knew.
@@ -1153,7 +1159,8 @@ export function MailProvider({ children }: { children: ReactNode }) {
     const moves = await engine.scrub(accountId, group.selector, action, keepLatest, except)
     // Purging returns nothing to undo, so the count comes from what the report said was there.
     if (action === 'purge') {
-      toast(`Deleting ${group.messages.toLocaleString()} messages from the server`, { description: group.label })
+      // The report's count is exactly what goes, unless the newest conversations are kept back.
+      toast(keepLatest > 0 ? 'Deleting from the server' : `Deleting ${group.messages.toLocaleString()} messages from the server`, { description: group.label })
       return group.messages
     }
     if (!moves.length) {
@@ -1687,9 +1694,11 @@ export function MailProvider({ children }: { children: ReactNode }) {
       void getAttachment(messageId, index, attachment).then(async (result) => {
         if (result.ok) {
           try {
-            const process = Bun.spawn(['open', result.attachment.path], { stdout: 'ignore', stderr: 'ignore' })
-            if (await process.exited === 0) toast.dismiss(id)
-            else toast.error(`Couldn't open ${attachment.name}`, { id, description: 'The system could not open this file.' })
+            // Quarantined, then opened; a file that could run something is only shown in Finder.
+            const opened = await openAttachmentFile(result.attachment.path)
+            if (opened.code !== 0) toast.error(`Couldn't open ${attachment.name}`, { id, description: 'The system could not open this file.' })
+            else if (opened.revealed) toast.info(`${attachment.name} is shown in Finder`, { id, description: 'Files like this can run programs or install software, so Jefi doesn\'t open them. Open it from Finder only if you trust the sender.' })
+            else toast.dismiss(id)
           } catch (error) {
             toast.error(`Couldn't open ${attachment.name}`, { id, description: error instanceof Error ? error.message : String(error) })
           }

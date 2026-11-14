@@ -111,6 +111,11 @@ export type EngineEvent =
   | { type: 'notesChanged'; accountId?: undefined; noteIds?: string[] }
   /** Tasks or their links changed; `taskIds` names them when known. Refetch what's on screen. */
   | { type: 'tasksChanged'; accountId?: undefined; taskIds?: string[] }
+  /**
+   * Local changes that never reached the server and were given up on (the server kept refusing them,
+   * or the folder was rebuilt there), and undone here: `count` messages per kind (a move: into `folder`).
+   */
+  | { type: 'changesDropped'; accountId: string; changes: Array<{ kind: 'flags' | 'move' | 'delete' | 'labels'; folder?: FolderId; count: number }> }
   /** An event's alert is due (calendar/reminders.ts): shown once, while fresh. */
   | { type: 'reminderDue'; accountId?: undefined; reminder: Reminder }
 

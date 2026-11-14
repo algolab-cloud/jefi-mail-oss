@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from 'bun:test'
+import { ImapFlow } from 'imapflow'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -181,6 +182,29 @@ test('a draft is copied to the server Drafts mailbox, shown once, and updated in
   // Nothing changed: no new APPEND.
   await sync()
   expect((await remote()).length).toBe(2)
+})
+
+test('a refused removal of the old server copy leaves the draft to retry, rather than uploading a duplicate', async () => {
+  const { engine, account, sync, remote } = await withDraftsFolder()
+  await sync()
+  engine.saveDraft(account.id, 'draft-1', draft)
+  await sync()
+  expect((await remote()).map((m) => m.subject).sort()).toEqual(['From my phone', 'Half-written'])
+
+  // The server refuses the EXPUNGE of the old copy: imapflow resolves messageDelete with false.
+  const original = ImapFlow.prototype.messageDelete
+  ImapFlow.prototype.messageDelete = async () => false
+  try {
+    engine.saveDraft(account.id, 'draft-1', { ...draft, subject: 'Now finished' })
+    await sync()
+    // The old copy is still there, so the new one must not go up beside it.
+    expect((await remote()).map((m) => m.subject).sort()).toEqual(['From my phone', 'Half-written'])
+  } finally {
+    ImapFlow.prototype.messageDelete = original
+  }
+  // Next time round it goes through: replaced, not piled up.
+  await sync()
+  expect((await remote()).map((m) => m.subject).sort()).toEqual(['From my phone', 'Now finished'])
 })
 
 test('a reply’s draft copy threads like the reply, and saving it unchanged doesn’t upload it again', async () => {

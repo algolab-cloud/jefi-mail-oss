@@ -103,15 +103,55 @@ export function vaultKeychain(file: string, keychain: Keychain, options: { share
   let key: Promise<Buffer> | null = null
   let failedAt = 0
 
+  /** The key as stored, or an error: a key that isn't 32 bytes is never used, and never replaced. */
+  const decodeKey = (stored: string): Buffer => {
+    const secret = Buffer.from(stored, 'base64')
+    if (secret.length !== 32) throw new Error('The vault key in the Keychain is malformed')
+    return secret
+  }
+  // The Keychain contract: get resolves null only when the item isn't there; a refused, cancelled or
+  // failed read rejects. So only a key that's truly gone can set the vault aside or make a new key;
+  // a read that fails just fails (vaultKey waits a while before asking again) and touches nothing.
   const loadKey = async (): Promise<Buffer> => {
     const stored = await keychain.get(VAULT_KEY)
-    if (stored) return Buffer.from(stored, 'base64')
-    // A vault without its key can't be opened again; set it aside rather than overwrite it. The
-    // old Keychain items are still there, so secrets saved before the vault come back.
-    if (existsSync(file)) renameSync(file, `${file}.unreadable-${Date.now()}`)
-    await keychain.set({ ...VAULT_KEY, value: randomBytes(32).toString('base64') })
-    // The UI and the engine can both get here on a first launch; whichever key landed last wins.
-    return Buffer.from((await keychain.get(VAULT_KEY))!, 'base64')
+    if (stored) return decodeKey(stored)
+    return createKey()
+  }
+  /**
+   * The first launch makes the key. The UI, the engine worker or a script beside them can all get
+   * here at once, so it's made under a lock file and looked for again inside it: the first one makes
+   * the key, and the rest read that one rather than replacing it (and setting its vault aside).
+   */
+  const createKey = async (): Promise<Buffer> => {
+    mkdirSync(dirname(file), { recursive: true })
+    const lock = `${file}.key-lock`
+    for (let waited = 0; ; waited += 20) {
+      try {
+        closeSync(openSync(lock, 'wx', 0o600))
+        break
+      } catch {
+        // Left by a crash; making a key takes well under a second, but a Keychain prompt may be up.
+        if (waited > 15_000) rmSync(lock, { force: true })
+        await Bun.sleep(20)
+      }
+    }
+    try {
+      const made = await keychain.get(VAULT_KEY)
+      if (made) return decodeKey(made)
+      // A vault without its key can't be opened again; set it aside rather than overwrite it. The
+      // old Keychain items are still there, so secrets saved before the vault come back.
+      if (existsSync(file)) {
+        const aside = `${file}.unreadable-${Date.now()}`
+        renameSync(file, aside)
+        console.error(`keychain: the vault key is gone from the Keychain; set the vault aside as ${aside}`)
+      }
+      await keychain.set({ ...VAULT_KEY, value: randomBytes(32).toString('base64') })
+      const stored = await keychain.get(VAULT_KEY)
+      if (!stored) throw new Error("The Keychain didn't keep the new vault key")
+      return decodeKey(stored)
+    } finally {
+      rmSync(lock, { force: true })
+    }
   }
   const fetchKey = options.shareKey ? sharedKey(file, () => vaultKey(), loadKey) : loadKey
   const vaultKey = (): Promise<Buffer> => {
@@ -124,14 +164,44 @@ export function vaultKeychain(file: string, keychain: Keychain, options: { share
     return key
   }
 
-  const read = (secret: Buffer): VaultContents => {
-    if (!existsSync(file)) return { secrets: {}, checked: [] }
-    const sealed = JSON.parse(readFileSync(file, 'utf8')) as { iv: string; tag: string; data: string }
+  const open = (raw: string, secret: Buffer): VaultContents => {
+    const sealed = JSON.parse(raw) as { iv: string; tag: string; data: string }
     const decipher = createDecipheriv('aes-256-gcm', secret, Buffer.from(sealed.iv, 'base64'))
     decipher.setAAD(VAULT_AAD)
     decipher.setAuthTag(Buffer.from(sealed.tag, 'base64'))
     const plain = Buffer.concat([decipher.update(Buffer.from(sealed.data, 'base64')), decipher.final()])
-    return JSON.parse(plain.toString('utf8')) as VaultContents
+    const contents = JSON.parse(plain.toString('utf8')) as Partial<VaultContents> | null
+    if (!contents || typeof contents.secrets !== 'object' || !contents.secrets || !Array.isArray(contents.checked)) throw new Error('unexpected contents')
+    return contents as VaultContents
+  }
+  /**
+   * The vault's contents. One that can't be opened (damaged, or sealed under another key) would fail
+   * every read forever, so it's kept beside the vault under a timestamped name and Jefi starts over
+   * with an empty one: secrets from before the vault come back from their own Keychain items, and the
+   * rest are asked for again. A file that can't be read at all (permissions, I/O) is an error, not this.
+   */
+  const read = (secret: Buffer, locked = false): VaultContents => {
+    let raw: string
+    try {
+      raw = readFileSync(file, 'utf8')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { secrets: {}, checked: [] }
+      throw error
+    }
+    try {
+      return open(raw, secret)
+    } catch (error) {
+      const setAside = () => {
+        // Another handle may have set it aside and written a good one meanwhile: leave that alone.
+        if (!existsSync(file) || readFileSync(file, 'utf8') !== raw) return
+        const aside = `${file}.corrupt-${Date.now()}`
+        renameSync(file, aside)
+        console.error(`keychain: the vault couldn't be opened (${error instanceof Error ? error.message : String(error)}); kept as ${aside}, starting a new one`)
+      }
+      if (locked) setAside()
+      else withLock(setAside)
+      return { secrets: {}, checked: [] }
+    }
   }
   const write = (secret: Buffer, contents: VaultContents) => {
     const iv = randomBytes(12)
@@ -143,12 +213,8 @@ export function vaultKeychain(file: string, keychain: Keychain, options: { share
     writeFileSync(temp, `${JSON.stringify(sealed)}\n`, { mode: 0o600 })
     renameSync(temp, file)
   }
-  /**
-   * Read, change and write the vault with no gap: synchronous, under a lock file, so a save from
-   * the UI and one from the engine worker can't drop each other's secret.
-   */
-  const change = async (edit: (contents: VaultContents) => void) => {
-    const secret = await vaultKey()
+  /** Runs `work` synchronously under the vault's lock file, so no other handle reads or writes meanwhile. */
+  const withLock = (work: () => void) => {
     mkdirSync(dirname(file), { recursive: true })
     const lock = `${file}.lock`
     for (let waited = 0; ; waited += 5) {
@@ -162,12 +228,22 @@ export function vaultKeychain(file: string, keychain: Keychain, options: { share
       }
     }
     try {
-      const contents = read(secret)
-      edit(contents)
-      write(secret, contents)
+      work()
     } finally {
       rmSync(lock, { force: true })
     }
+  }
+  /**
+   * Read, change and write the vault with no gap: synchronous, under a lock file, so a save from
+   * the UI and one from the engine worker can't drop each other's secret.
+   */
+  const change = async (edit: (contents: VaultContents) => void) => {
+    const secret = await vaultKey()
+    withLock(() => {
+      const contents = read(secret, true)
+      edit(contents)
+      write(secret, contents)
+    })
   }
   const markChecked = (contents: VaultContents, item: KeychainItem) => {
     if (!contents.checked.includes(itemId(item))) contents.checked.push(itemId(item))

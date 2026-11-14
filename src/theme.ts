@@ -465,8 +465,8 @@ export function saveSettings(settings: Settings) {
   if (!file) return
   try {
     const fs = require('node:fs')
-    fs.mkdirSync(file.slice(0, file.lastIndexOf('/')), { recursive: true })
-    fs.writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`)
+    fs.mkdirSync(file.slice(0, file.lastIndexOf('/')), { recursive: true, mode: 0o700 })
+    fs.writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 })
   } catch {}
 }
 
