@@ -212,6 +212,10 @@ export type Settings = {
   aiModels: { anthropic: string; openai: string; codex: string }
   /** AI features are off until the person turns them on. */
   aiEnabled: boolean
+  /** About the person and how they write, in their own words: goes along with every assistant request and draft. */
+  aiInstructions: string
+  /** Assistant chats are kept on this Mac so they can be reopened. */
+  assistantHistory: boolean
   /** Banners in Notification Center when new mail arrives and Jefi isn't the app in front. */
   notifications: boolean
   /** When "Not now" last closed the notification permission screen (ms); 0 if it never did. */
@@ -267,6 +271,9 @@ export type Settings = {
   mcpEnabled: boolean
 }
 
+/** Instructions are sent with every request: long enough for a style guide, short enough to stay cheap. */
+export const AI_INSTRUCTIONS_MAX = 2000
+
 export type MenuBarTitleMode = 'none' | 'unread' | 'next'
 
 export type CleanupSchedule = 'off' | 'daily' | 'weekly'
@@ -317,6 +324,8 @@ export const DEFAULT_SETTINGS: Settings = {
   paneWidths: { sidebar: 240, list: 440, assistant: 380 },
   sidebar: DEFAULT_SIDEBAR,
   aiEnabled: false,
+  aiInstructions: '',
+  assistantHistory: true,
   notifications: true,
   notificationPromptDismissedAt: 0,
   notificationDeniedPromptVersion: '',
@@ -419,6 +428,8 @@ export function loadSettings(): Settings {
       snippets: bool(raw.snippets, d.snippets),
       onboarded: bool(raw.onboarded, d.onboarded),
       aiEnabled: bool(raw.aiEnabled, d.aiEnabled),
+      aiInstructions: text(raw.aiInstructions, d.aiInstructions).slice(0, AI_INSTRUCTIONS_MAX),
+      assistantHistory: bool(raw.assistantHistory, d.assistantHistory),
       notifications: bool(raw.notifications, d.notifications),
       autoUpdate: bool(raw.autoUpdate, d.autoUpdate),
       assistantPinned: bool(raw.assistantPinned, d.assistantPinned),

@@ -16,7 +16,7 @@ import { SIGN_IN_BROWSERS, SIGN_IN_PLATFORMS, browserVersion, inAppSignInAvailab
 import { ACCOUNT_TONES, accountTone, providerFor, type Account } from './accounts'
 import { ProviderLogo } from './provider-logo'
 import { JefiWordmark, jefiAvatar } from './brand'
-import { ACCENTS, DEFAULT_SETTINGS, FONT, TOPBAR_HEIGHT, THEMES, forgetRemoteImageSender, useSettings, type AccentName, type SignInUserAgent, type ThemeName } from './theme'
+import { ACCENTS, AI_INSTRUCTIONS_MAX, DEFAULT_SETTINGS, FONT, TOPBAR_HEIGHT, THEMES, forgetRemoteImageSender, useSettings, type AccentName, type SignInUserAgent, type ThemeName } from './theme'
 import { Icon, IconButton } from './icons'
 import { APP_VERSION } from './version'
 import { checkForUpdates, restartToUpdate, useUpdater } from './use-updater'
@@ -30,6 +30,7 @@ import { copyLink } from './native/mail-webview'
 import { setupSnippets, snippetDisplayLines } from './headless/setup'
 import { toast } from './toast'
 import type { SettingsSection } from './deeplink'
+import { clearChats } from './assistant-chats'
 import { pageOf, settingsPage, showSettingsPage, useSettingsPage } from './settings-pages'
 import { SettingsNav } from './settings-sidebar'
 import { openFeedback } from './feedback'
@@ -574,6 +575,55 @@ function AiSettings() {
                 : "Only when you use a feature, the conversation it's about is sent from your Mac to OpenAI's API with your key. Nothing passes through servers we run."}
           </text>
         </div>
+      </SettingsCard>
+      <AssistantSettings />
+    </>
+  )
+}
+
+/** The assistant's memory of the person: their notes about themselves, and whether chats are kept. */
+function AssistantSettings() {
+  const { settings, update, C } = useSettings()
+  const [cleared, setCleared] = useState(false)
+  const setHistory = (value: boolean) => {
+    // Turning history off takes the saved chats with it, rather than leaving them behind unseen.
+    if (!value) clearChats()
+    update({ assistantHistory: value })
+  }
+  return (
+    <>
+      <Heading>Assistant</Heading>
+      <SettingsCard>
+        <div style={{ paddingLeft: 14, paddingRight: 14, paddingTop: 12, paddingBottom: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <text style={{ fontSize: 13.5, fontWeight: 500, color: C.text, fontFamily: FONT }}>About you and how you write</text>
+          <text style={{ fontSize: 12, lineHeight: 17, color: C.secondary, fontFamily: FONT }}>
+            Goes with every assistant request and every AI draft, so they sound like you. For example: your role, people you often write to, how long your emails are, how you sign off.
+          </text>
+          <div style={{ borderRadius: 9, backgroundColor: C.overlay, paddingLeft: 10, paddingRight: 10, paddingTop: 8, paddingBottom: 8, marginTop: 4 }}>
+            <textarea
+              testId="ai-instructions"
+              value={settings.aiInstructions}
+              placeholder="I run a small design studio. Keep replies short and friendly, no exclamation marks. Sign off with my first name."
+              minRows={3}
+              maxRows={10}
+              onChange={(event) => update({ aiInstructions: (event.value ?? '').slice(0, AI_INSTRUCTIONS_MAX) })}
+              style={{ fontSize: 13, lineHeight: 18, fontFamily: FONT, color: C.text }}
+            />
+          </div>
+          <text style={{ fontSize: 11, color: C.muted, fontFamily: FONT }}>{`${settings.aiInstructions.length} / ${AI_INSTRUCTIONS_MAX}`}</text>
+        </div>
+        <CardDivider />
+        <SettingsRow title="Keep chat history" sub="Chats are saved on this Mac only, so you can reopen them from the assistant. Turning this off deletes them.">
+          <Switch testId="toggle-assistant-history" value={settings.assistantHistory} onChange={setHistory} />
+        </SettingsRow>
+        {settings.assistantHistory ? (
+          <>
+            <CardDivider />
+            <SettingsRow title="Saved chats" sub={cleared ? 'Deleted' : 'Delete every saved assistant chat.'}>
+              <Button label="Delete all" variant="danger" onClick={() => { clearChats(); setCleared(true) }} testId="assistant-history-clear" />
+            </SettingsRow>
+          </>
+        ) : null}
       </SettingsCard>
     </>
   )

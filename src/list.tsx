@@ -1,3 +1,4 @@
+import { chatAboutThreads } from './assistant-handoff'
 import { countRender } from './render-counts'
 import { FONT, LIST_WIDTH, TOPBAR_HEIGHT, mixHex, useSettings } from './theme'
 import { Icon, IconButton, type IconName } from './icons'
@@ -490,6 +491,16 @@ function InboxListView({
       const inTrash = targets.every((t) => t.folder === 'trash')
       const items: ContextItem[] = [
         ...(many ? [{ heading: `${ids.length} conversations` } as ContextItem] : [{ label: 'Open', icon: 'mailOpen', onSelect: () => onSelect(thread.id) } as ContextItem, 'separator' as const]),
+        ...(targets.some((t) => t.folder !== 'outbox')
+          ? [
+              {
+                label: many ? `Chat about these ${ids.length} conversations` : 'Chat about this thread',
+                icon: 'sparkles',
+                onSelect: () => chatAboutThreads(targets.filter((t) => t.folder !== 'outbox')),
+                testId: 'ctx-chat-thread',
+              } as ContextItem,
+            ]
+          : []),
         { label: unread ? 'Mark as read' : 'Mark as unread', icon: unread ? 'mailOpen' : 'mail', onSelect: () => run({ unread: !unread }), testId: 'ctx-read' },
         { label: starred ? 'Remove star' : 'Add star', icon: 'star', onSelect: () => run({ starred: !starred }), testId: 'ctx-star' },
         ...(!many && thread.folder !== 'outbox' && thread.messages.length
@@ -635,6 +646,14 @@ function InboxListView({
             <text style={{ fontSize: 12.5, color: C.accent, fontFamily: FONT, whiteSpace: 'nowrap' }}>{pickedHere.length === visibleIds.length ? 'Select none' : 'Select all'}</text>
           </div>
           <div style={{ flexGrow: 1 }} />
+          <IconButton
+            icon="sparkles"
+            size={16}
+            pad={28}
+            onClick={() => chatAboutThreads(threads.filter((t) => pickedHere.includes(t.id) && t.folder !== 'outbox'))}
+            testId="bulk-chat"
+            tooltip="Chat about these with AI"
+          />
           <IconButton icon="archive" size={16} pad={28} onClick={() => act({ move: 'archive' })} testId="bulk-archive" tooltip="Archive" />
           <IconButton icon="trash" size={16} pad={28} onClick={() => act(inTrash ? 'deleteForever' : { move: 'trash' })} testId="bulk-delete" tooltip={inTrash ? 'Delete forever' : 'Delete'} />
           <IconButton icon={anyUnread ? 'mailOpen' : 'mail'} size={16} pad={28} onClick={() => act({ unread: !anyUnread })} testId="bulk-read" tooltip={anyUnread ? 'Mark as read' : 'Mark as unread'} />
