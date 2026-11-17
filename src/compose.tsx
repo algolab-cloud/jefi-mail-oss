@@ -445,7 +445,7 @@ export function ComposePane({
   onDiscard: (mail: ComposedMail) => void
   onClose: () => void
 }) {
-  const { C } = useSettings()
+  const { C, settings: appSettings } = useSettings()
   countRender('ComposePane')
   // Selected, not the whole store: every publish (sync, a read flag) would otherwise redraw the composer.
   const active = useMailSelector((store) => store.account)
@@ -516,8 +516,8 @@ export function ComposePane({
     }
     const stream = { signal: abort.signal, onText: (delta: string) => show((text += delta)) }
     setAiBusy(true)
-    const me = account
-    const request = 'write' in job ? writeEmail(ai.connection, me, { to: toTags, subject, instruction: job.write }, stream) : rewriteEmail(ai.connection, bodyText.current, job.rewrite, stream)
+    const me = { name: account.name, email: account.email, instructions: appSettings.aiInstructions }
+    const request = 'write' in job ? writeEmail(ai.connection, me, { to: toTags, subject, instruction: job.write }, stream) : rewriteEmail(ai.connection, bodyText.current, job.rewrite, stream, appSettings.aiInstructions)
     request
       .then((final) => {
         let result = final.trim()

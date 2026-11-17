@@ -24,7 +24,7 @@ import { aiErrorMessage, draftReply, summarizeThread, translateMessage } from '.
 import { useAi } from './use-ai'
 import { draftFromMailto, LinkPopover, type LinkPosition, type LinkReviewRequest } from './link-popover'
 import { copyLink, copyText, openExternalLink } from './native/mail-webview'
-import { sendToAssistant } from './assistant-handoff'
+import { chatAboutThread, sendToAssistant } from './assistant-handoff'
 import { SummaryCard } from './summary-card'
 import { pickAttachmentDestination, pickAttachmentDirectory, pickOriginalDestination, saveAttachmentInDirectory, saveAttachmentTo, saveOriginalTo } from './native/file-picker'
 import { replySubject } from './engine/mime'
@@ -499,6 +499,7 @@ function MessageBlockView({
       ...(message.bodyMissing ? [] : [{ label: 'Copy message text', icon: 'copy', onSelect: () => copy(messageText(message), 'Message text'), testId: 'ctx-message-copy-text' } as ContextItem]),
       { label: 'Copy sender address', icon: 'atSign', onSelect: () => copy(message.email, 'Address'), testId: 'ctx-message-copy-address' },
       'separator',
+      { label: 'Chat about this thread', icon: 'sparkles', onSelect: () => chatAboutThread(threadOf()), testId: 'ctx-message-chat-thread' },
       { label: 'Reply', icon: 'reply', onSelect: () => onReply('reply'), testId: 'ctx-message-reply' },
       { label: 'Reply all', icon: 'replyAll', onSelect: () => onReply('replyAll') },
       { label: 'Forward', icon: 'forward', onSelect: onForward },
@@ -629,7 +630,8 @@ function MessageBlockView({
                 <div style={{ width: 4, flexShrink: 0 }} />
                 <div style={{ flexShrink: 0 }}>
                   <IconButton icon="more" size={16} pad={26} active={menu.open} onClick={menu.toggle} testId={`message-more-${message.id}`} />
-                  <Menu open={menu.open} onClose={menu.close} align="end" width={180}>
+                  <Menu open={menu.open} onClose={menu.close} align="end" width={230}>
+                    <MenuItem icon="sparkles" label="Chat about this thread" testId={`message-chat-thread-${message.id}`} onSelect={() => { menu.close(); chatAboutThread(threadOf()) }} />
                     <MenuItem icon="reply" label="Reply" onSelect={() => { menu.close(); onReply('reply') }} />
                     <MenuItem icon="replyAll" label="Reply all" onSelect={() => { menu.close(); onReply('replyAll') }} />
                     <MenuItem icon="forward" label="Forward" testId={`message-forward-${message.id}`} onSelect={() => { menu.close(); onForward() }} />
@@ -796,7 +798,7 @@ export function ReplyComposer({
   /** A reply names the message it answers; a forward (no `parentMessageId`) starts a new conversation. */
   onExpand: (initial: DraftFields, parentMessageId?: string) => void
 }) {
-  const { C } = useSettings()
+  const { C, settings } = useSettings()
   countRender('ReplyComposer')
   const accounts = useMailSelector((store) => store.accounts)
   const { reply, accountOf, notify, getAttachment } = useMailActions()
@@ -839,7 +841,7 @@ export function ReplyComposer({
       setKey((k) => k + 1)
     }
     setDrafting(true)
-    draftReply(ai.connection, thread, { name: me.name, email: me.email }, instruction, {
+    draftReply(ai.connection, thread, { name: me.name, email: me.email, instructions: settings.aiInstructions }, instruction, {
       signal: abort.signal,
       onText: (delta) => {
         text += delta

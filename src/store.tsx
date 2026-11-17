@@ -167,12 +167,13 @@ type MailStore = {
   /** Archive or trash several senders at once, behind one toast and one Undo. Returns conversations moved. */
   scrubAll: (groups: ScrubGroup[], action: 'archive' | 'trash', keepLatest: number, options?: { accountId?: string; title?: string; except?: string[] }) => Promise<number>
   unsubscribe: (group: Pick<ScrubGroup, 'detail' | 'label'>) => Promise<boolean>
-  /** One action over several conversations, with a single toast (and Undo, for moves). */
-  bulk: (ids: string[], action: BulkAction) => void
+  /** One action over several conversations, with a single toast (and Undo, for moves). Returns what puts it back, when it can be. */
+  bulk: (ids: string[], action: BulkAction) => (() => void) | undefined
   toggleStar: (id: string) => void
   setUnread: (id: string, unread: boolean) => void
   toggleLabel: (id: string, labelId: string) => void
-  snooze: (id: string, until: string) => void
+  /** Returns what un-snoozes it (the toast's Undo). */
+  snooze: (id: string, until: string) => (() => void) | undefined
   /** `undo`: offered on the toast (a discarded draft can be brought back by the caller). */
   deleteForever: (id: string, undo?: () => void) => void
   /**
@@ -1109,7 +1110,7 @@ export function MailProvider({ children }: { children: ReactNode }) {
 
   const bulk: MailStore['bulk'] = (ids, action) => {
     const targets = ids.map(find).filter((t): t is MailThread => !!t)
-    if (!targets.length) return
+    if (!targets.length) return undefined
     const count = targets.length === 1 ? '1 conversation' : `${targets.length} conversations`
     if (action === 'deleteForever') {
       const gone = new Set(targets.map((t) => t.id))
@@ -1118,21 +1119,36 @@ export function MailProvider({ children }: { children: ReactNode }) {
         updateThreadsFor(owner, (list) => list.filter((x) => x.id !== t.id))
         engine.deleteForever(owner, t.id)
       }
-      return void toast(`Deleted ${count} forever`)
+      toast(`Deleted ${count} forever`)
+      return undefined
     }
     if ('unread' in action) {
+      const before = targets.map((t) => ({ id: t.id, unread: t.unread }))
       for (const t of targets) {
         patch(t.id, () => ({ unread: action.unread }))
         engine.setFlags(ownerOf(t.id), t.id, { unread: action.unread })
       }
-      return void toast(`Marked ${count} as ${action.unread ? 'unread' : 'read'}`)
+      toast(`Marked ${count} as ${action.unread ? 'unread' : 'read'}`)
+      return () => {
+        for (const b of before) {
+          patch(b.id, () => ({ unread: b.unread }))
+          engine.setFlags(ownerOf(b.id), b.id, { unread: b.unread })
+        }
+      }
     }
     if ('starred' in action) {
+      const before = targets.map((t) => ({ id: t.id, starred: t.starred }))
       for (const t of targets) {
         patch(t.id, () => ({ starred: action.starred }))
         engine.setFlags(ownerOf(t.id), t.id, { starred: action.starred })
       }
-      return void toast(`${action.starred ? 'Starred' : 'Unstarred'} ${count}`)
+      toast(`${action.starred ? 'Starred' : 'Unstarred'} ${count}`)
+      return () => {
+        for (const b of before) {
+          patch(b.id, () => ({ starred: b.starred }))
+          engine.setFlags(ownerOf(b.id), b.id, { starred: b.starred })
+        }
+      }
     }
     const moving = targets.filter((t) => t.folder !== action.move)
     const previous = moving.map((t) => ({ id: t.id, folder: t.folder, snoozeUntil: t.snoozeUntil }))
@@ -1141,17 +1157,14 @@ export function MailProvider({ children }: { children: ReactNode }) {
       engine.move(ownerOf(t.id), t.id, action.move)
     }
     const verb: Partial<Record<FolderId, string>> = { archive: 'Archived', trash: 'Moved to Trash', spam: 'Marked as spam', inbox: 'Moved to Inbox' }
-    toast(`${verb[action.move] ?? `Moved to ${FOLDER_NAMES[action.move]}`}: ${count}`, {
-      action: {
-        label: 'Undo',
-        onClick: () => {
-          for (const p of previous) {
-            patch(p.id, () => ({ folder: p.folder, snoozeUntil: p.snoozeUntil }))
-            engine.move(ownerOf(p.id), p.id, p.folder)
-          }
-        },
-      },
-    })
+    const undo = () => {
+      for (const p of previous) {
+        patch(p.id, () => ({ folder: p.folder, snoozeUntil: p.snoozeUntil }))
+        engine.move(ownerOf(p.id), p.id, p.folder)
+      }
+    }
+    toast(`${verb[action.move] ?? `Moved to ${FOLDER_NAMES[action.move]}`}: ${count}`, { action: { label: 'Undo', onClick: undo } })
+    return undo
   }
 
   const scrub: MailStore['scrub'] = async (group, action, keepLatest, except) => {
@@ -1510,16 +1523,12 @@ export function MailProvider({ children }: { children: ReactNode }) {
       const previous = { folder: thread.folder, snoozeUntil: thread.snoozeUntil }
       patch(id, () => ({ folder: 'snoozed', snoozeUntil: label }))
       engine.snooze(ownerOf(id), id, until)
-      toast(`Snoozed until ${label}`, {
-        description: quote(thread.subject),
-        action: {
-          label: 'Undo',
-          onClick: () => {
-            patch(id, () => previous)
-            engine.unsnooze(ownerOf(id), id)
-          },
-        },
-      })
+      const undo = () => {
+        patch(id, () => previous)
+        engine.unsnooze(ownerOf(id), id)
+      }
+      toast(`Snoozed until ${label}`, { description: quote(thread.subject), action: { label: 'Undo', onClick: undo } })
+      return undo
     },
     deleteForever: (id, undo) => {
       const thread = find(id)

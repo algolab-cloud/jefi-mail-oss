@@ -407,26 +407,38 @@ Answer with only a JSON array, no prose and no code fence, listing just the conv
   )
 }
 
+/** Who's writing, and in their own words how they write (Settings → AI). */
+export type Writer = { name: string; email: string; instructions?: string }
+
+/**
+ * The person's own notes about themselves and their writing, marked off as a style guide. They wrote
+ * it, so it's followed for tone and facts about them; it never overrides the request or safety rules.
+ */
+export function writerNote(instructions: string | undefined) {
+  const text = instructions?.trim()
+  return text ? `\n<about_me>\n${text.replace(/<\/about_me>/gi, '</ about_me>')}\n</about_me>\nThe person wrote the notes above about themselves and how they write: follow them for tone, length, sign-offs and facts about them.` : ''
+}
+
 /** A reply to the latest message, in the person's voice, streamed as it's written. */
-export function draftReply(connection: AiConnection, thread: MailThread, me: { name: string; email: string }, instruction: string, stream: Stream) {
+export function draftReply(connection: AiConnection, thread: MailThread, me: Writer, instruction: string, stream: Stream) {
   return run(
     connection,
     `${threadForModel(thread)}
 
 Write a reply from ${me.name} <${me.email}> to the latest message in this conversation.${instruction.trim() ? ` What they want to say: ${instruction.trim()}` : ''}
-Match the tone of the conversation, keep it concise, and don't invent facts, dates, or commitments; leave a [bracketed placeholder] where something is unknown. Output only the reply body in plain text: no subject line, no quoted history, and no signature.`,
+Match the tone of the conversation, keep it concise, and don't invent facts, dates, or commitments; leave a [bracketed placeholder] where something is unknown. Output only the reply body in plain text: no subject line, no quoted history, and no signature.${writerNote(me.instructions)}`,
     'medium',
     stream,
   )
 }
 
 /** A new email from a short description of what it should say. Returns the body; the first line may be "Subject: …" when none was given. */
-export function writeEmail(connection: AiConnection, me: { name: string; email: string }, draft: { to: string[]; subject: string; instruction: string }, stream: Stream) {
+export function writeEmail(connection: AiConnection, me: Writer, draft: { to: string[]; subject: string; instruction: string }, stream: Stream) {
   return run(
     connection,
     `Write an email from ${me.name} <${me.email}>${draft.to.length ? ` to ${draft.to.join(', ')}` : ''}.${draft.subject.trim() ? ` Subject: "${draft.subject.trim()}".` : ''}
 What it should say: ${draft.instruction.trim()}
-Keep it concise and natural, and don't invent facts, dates, or commitments; leave a [bracketed placeholder] where something is unknown. ${draft.subject.trim() ? 'Output only the body' : 'Start with one line "Subject: <subject>", then a blank line, then the body'} in plain text (simple markdown lists are fine). No signature.`,
+Keep it concise and natural, and don't invent facts, dates, or commitments; leave a [bracketed placeholder] where something is unknown. ${draft.subject.trim() ? 'Output only the body' : 'Start with one line "Subject: <subject>", then a blank line, then the body'} in plain text (simple markdown lists are fine). No signature.${writerNote(me.instructions)}`,
     'medium',
     stream,
   )
@@ -442,12 +454,12 @@ export const REWRITES = {
 export type Rewrite = keyof typeof REWRITES
 
 /** The person's own draft, rewritten one way. Their text is data, not instructions. */
-export function rewriteEmail(connection: AiConnection, body: string, how: Rewrite, stream: Stream) {
+export function rewriteEmail(connection: AiConnection, body: string, how: Rewrite, stream: Stream, instructions?: string) {
   return run(
     connection,
     `<draft>\n${body}\n</draft>
 
-Rewrite the email draft above. ${REWRITES[how]} Keep names, numbers, links and any [bracketed placeholders] exactly. Keep the same language. Output only the rewritten body, nothing before or after it.`,
+Rewrite the email draft above. ${REWRITES[how]} Keep names, numbers, links and any [bracketed placeholders] exactly. Keep the same language. Output only the rewritten body, nothing before or after it.${how === 'proofread' ? '' : writerNote(instructions)}`,
     how === 'proofread' ? 'low' : 'medium',
     stream,
   )

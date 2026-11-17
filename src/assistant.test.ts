@@ -175,3 +175,23 @@ test('the assistant says why it is unavailable, pointing at the actual fix', () 
   expect(assistantUnavailableText({ ...base, aiEnabled: true })).toBe('Add your Claude API key in Settings → AI to use the assistant.')
   expect(assistantUnavailableText({ ...base, aiEnabled: true, codexSelected: true, codexError: 'Not signed in to ChatGPT.' })).toBe('Not signed in to ChatGPT.')
 })
+
+test('a change the app can take back reaches the chat as Undo, and never goes to the model', async () => {
+  const events: AssistantEvent[] = []
+  let undone = 0
+  const tools = { update_threads: async () => ({ summary: '2 conversations', undo: () => void undone++ }) } as unknown as AssistantTools
+  const result = await execute('t1', 'update_threads', { thread_ids: ['a', 'b'], action: 'archive' }, tools, (e) => events.push(e))
+  expect(result).toEqual({ ok: true, content: '{"summary":"2 conversations"}' })
+  const done = events.find((e) => e.type === 'tool-result')
+  expect(done).toMatchObject({ ok: true, summary: '2 conversations' })
+  ;(done as { undo?: () => void }).undo?.()
+  expect(undone).toBe(1)
+})
+
+test('attachments are read only when the app offers it, and need a thread and a file name', async () => {
+  expect(toolsFor({} as AssistantTools).some((t) => t.name === 'read_attachment')).toBe(false)
+  const tools = { read_attachment: async ({ name }: { name: string }) => `text of ${name}` } as unknown as AssistantTools
+  expect(toolsFor(tools).map((t) => t.name)).toEqual(['read_attachment'])
+  expect(await execute('r1', 'read_attachment', { thread_id: 'a' }, tools, () => {})).toEqual({ ok: false, content: 'Invalid input: name must be a non-empty string' })
+  expect(await execute('r2', 'read_attachment', { thread_id: 'a', name: 'q.pdf' }, tools, () => {})).toEqual({ ok: true, content: 'text of q.pdf' })
+})

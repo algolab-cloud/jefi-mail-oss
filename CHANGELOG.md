@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.11.0 — 2026-11-16
+
+- The assistant: chat about any email or several at once, @ to bring in mail and people, drafts you can shorten or rephrase in the chat, Undo on everything it changes, source cards, follow-up questions, regenerate, copy and edit, and chat history kept on your Mac.
+- Settings → AI: tell the AI about yourself and how you write, for the assistant and every AI draft. The assistant can read attached PDFs, Word, RTF, HTML and text files.
+- Attachments are quarantined, and ones that could run something are shown in Finder instead of opened. One-click unsubscribe only goes to safe https addresses.
+- Changes the mail server refuses are retried, or undone and reported, instead of silently lost. "Delete forever" in Clean up spares Sent and Drafts.
+- Jefi's data folder is private to you, the mail database is backed up before upgrades, and clean-ups queue moves faster.
+
+[Full release notes](docs/releases/0.11.0.md)
+
 ## 0.10.0 — 2026-11-08
 
 - Smart clean-up: your AI sorts Inbox senders into junk, not sure and important, keeps the messages in junk worth keeping (codes, receipts, deliveries), and finds real mail in Spam. It can also run daily or weekly, with its own AI model.
