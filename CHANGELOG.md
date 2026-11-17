@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.11.0 — 2026-11-16
+## 0.11.0 — 2026-11-17
 
 - The assistant: chat about any email or several at once, @ to bring in mail and people, drafts you can shorten or rephrase in the chat, Undo on everything it changes, source cards, follow-up questions, regenerate, copy and edit, and chat history kept on your Mac.
 - Settings → AI: tell the AI about yourself and how you write, for the assistant and every AI draft. The assistant can read attached PDFs, Word, RTF, HTML and text files.
